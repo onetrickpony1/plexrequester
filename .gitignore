@@ -1,0 +1,43 @@
+# Private runtime data (normally stored in %LOCALAPPDATA%\Plex Requester)
+config.json
+requests.json
+request-fulfillment-state.json
+auth-sessions.json
+rename-history.jsonl
+plex-requester.log
+
+# Local environment and secret files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.torrent
+
+# Python-generated files
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Windows launcher build output
+PlexRequester.exe
+PlexRequester.updated.exe
+PlexRequester.build.exe
+Plex Requester*.exe
+*.pdb
+bin/
+obj/
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.tmp
+*.bak
+*~

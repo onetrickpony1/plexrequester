@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Plex Requester</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="panel">
+        <div class="mast">
+          <div class="brand-title">
+            <h1>Plex Requester</h1>
+            <span class="app-version" id="appVersion" aria-label="Application version"></span>
+          </div>
+          <div class="mast-actions">
+            <a class="external-link" href="https://ext.to/" target="_blank" rel="noopener noreferrer">Open ext.to</a>
+            <button class="secondary-button logout-button" id="logoutButton" type="button">Login</button>
+          </div>
+        </div>
+
+        <div class="config-warning" id="configWarning" hidden></div>
+
+        <section class="login-panel" id="loginPanel" hidden>
+          <input id="loginPin" type="password" inputmode="numeric" autocomplete="off" placeholder="PIN">
+          <button class="secondary-button" id="loginButton" type="button">Login</button>
+          <div class="mobile-pinpad" id="mobilePinpad" aria-label="PIN keypad">
+            <button type="button" data-pin="1">1</button>
+            <button type="button" data-pin="2">2</button>
+            <button type="button" data-pin="3">3</button>
+            <button type="button" data-pin="4">4</button>
+            <button type="button" data-pin="5">5</button>
+            <button type="button" data-pin="6">6</button>
+            <button type="button" data-pin="7">7</button>
+            <button type="button" data-pin="8">8</button>
+            <button type="button" data-pin="9">9</button>
+            <button type="button" data-action="clear">Clear</button>
+            <button type="button" data-pin="0">0</button>
+            <button type="button" data-action="backspace">Back</button>
+          </div>
+          <div class="message" id="loginMessage" hidden></div>
+        </section>
+
+        <div class="site-content" id="siteContent">
+        <div class="tabs" role="tablist" aria-label="Plex Requester sections">
+          <button class="tab-button active" id="requestTabButton" type="button" role="tab" aria-selected="true" aria-controls="requestPanel">Request</button>
+          <button class="tab-button admin-only" id="downloadTabButton" type="button" role="tab" aria-selected="false" aria-controls="downloadPanel" hidden>Download</button>
+          <button class="tab-button" id="libraryTabButton" type="button" role="tab" aria-selected="false" aria-controls="libraryPanel">Library</button>
+          <button class="tab-button" id="storageTabButton" type="button" role="tab" aria-selected="false" aria-controls="storagePanel">Storage</button>
+          <button class="tab-button" id="qbitTabButton" type="button" role="tab" aria-selected="false" aria-controls="qbitPanel">Status</button>
+          <button class="tab-button admin-only" id="configTabButton" type="button" role="tab" aria-selected="false" aria-controls="configPanel" hidden>Config</button>
+        </div>
+
+        <section class="tab-panel active" id="requestPanel" role="tabpanel" aria-labelledby="requestTabButton">
+          <section class="tmdb-tool" aria-label="Request lookup">
+            <div class="tmdb-header">
+              <h2>Request</h2>
+            </div>
+
+            <div class="tmdb-search-row request-search-row">
+              <input id="requesterName" type="text" placeholder="Your name">
+              <input id="requestSearch" type="text" placeholder="Movie or TV show">
+              <select id="requestQuality" aria-label="Quality">
+                <option value="1080p" selected>1080p</option>
+                <option value="4K">4K</option>
+                <option value="REMUX">REMUX</option>
+              </select>
+            </div>
+
+            <div class="message" id="requestMessage" hidden></div>
+            <div class="tmdb-results" id="requestResults"></div>
+          </section>
+
+          <div class="request-list" id="requestList"></div>
+        </section>
+
+        <section class="tab-panel" id="downloadPanel" role="tabpanel" aria-labelledby="downloadTabButton" hidden>
+          <form id="magnetForm" autocomplete="off">
+            <section class="tmdb-tool" aria-label="TMDb lookup">
+              <div class="tmdb-header">
+                <div>
+                  <h2>TMDb Lookup</h2>
+                  <p class="field-note" id="tmdbStatus">Save your TMDb API key in the Plex Requester log window to enable lookup.</p>
+                </div>
+              </div>
+
+              <div class="tmdb-search-row">
+                <input id="tmdbSearch" type="text" placeholder="Search movie or TV show title">
+                <select id="tmdbType">
+                  <option value="all">Movies and TV shows</option>
+                  <option value="movie">Movies</option>
+                  <option value="tv">TV shows</option>
+                </select>
+                <input id="tmdbSeason" type="number" min="1" max="99" value="1" aria-label="Season number">
+              </div>
+
+              <div class="message" id="tmdbMessage" hidden></div>
+              <div class="tmdb-results" id="tmdbResults"></div>
+            </section>
+
+            <div class="download-source-grid">
+              <div class="magnet-source">
+                <label for="magnet">Magnet link</label>
+                <textarea id="magnet" name="magnet" spellcheck="false" placeholder="magnet:?xt=urn:btih:..."></textarea>
+              </div>
+
+              <div class="source-divider"><span>or</span></div>
+
+              <div class="torrent-file-field">
+                <label for="torrentFile">Torrent file</label>
+                <input id="torrentFile" name="torrentFile" type="file" aria-describedby="torrentFileNote">
+                <p class="field-note" id="torrentFileNote">Choose one .torrent file, up to 10 MB. On iPhone or iPad, select it from the Files browser.</p>
+              </div>
+            </div>
+
+            <div class="download-settings">
+              <div class="download-name-field">
+                <label for="downloadName">Download name</label>
+                <input id="downloadName" name="downloadName" type="text" autocomplete="off" placeholder="Optional, e.g. The Office (2005) S01">
+              </div>
+
+              <fieldset>
+                <legend>Destination</legend>
+                <div class="destinations" id="destinations"></div>
+              </fieldset>
+
+              <div class="folder-select" id="folderSelect" hidden>
+                <label>TV show folder</label>
+                <div class="folder-levels" id="folderLevels"></div>
+                <p class="field-note" id="folderSelectNote"></p>
+              </div>
+
+              <div class="subfolder-control">
+                <label class="check-row" for="useSubfolder">
+                  <input id="useSubfolder" name="useSubfolder" type="checkbox">
+                  <span>Create new folders inside the selected destination</span>
+                </label>
+
+                <div class="subfolder-field" id="subfolderField" hidden>
+                  <label>New folder path</label>
+                  <div class="new-folder-list" id="newFolderList"></div>
+                  <button class="secondary-button" id="addFolderButton" type="button">Add Folder Level</button>
+                  <p class="field-note">Example: add <strong>The Office (2005)</strong>, then <strong>The Office (2005) S01</strong>.</p>
+                </div>
+              </div>
+            </div>
+
+            <button id="submitButton" type="submit">
+              <span>Add to Library</span>
+            </button>
+          </form>
+
+          <div class="message" id="message" hidden></div>
+        </section>
+
+        <section class="tab-panel" id="libraryPanel" role="tabpanel" aria-labelledby="libraryTabButton" hidden>
+          <form class="library-search" id="librarySearchForm" autocomplete="off">
+            <label for="librarySearch">Search existing Plex library</label>
+            <div class="search-row">
+              <input id="librarySearch" name="librarySearch" type="text" placeholder="Movie or TV show title">
+              <select id="libraryType" name="libraryType">
+                <option value="all">Movies and TV shows</option>
+                <option value="movie">Movies</option>
+                <option value="show">TV shows</option>
+              </select>
+              <button type="submit">Search</button>
+            </div>
+          </form>
+          <div class="message" id="libraryMessage" hidden></div>
+          <div class="library-results" id="libraryResults"></div>
+        </section>
+
+        <section class="tab-panel" id="storagePanel" role="tabpanel" aria-labelledby="storageTabButton" hidden>
+          <div class="storage-header">
+            <div>
+              <h2>Storage</h2>
+            </div>
+            <button class="secondary-button" id="refreshStorageButton" type="button">Refresh</button>
+          </div>
+          <div class="message" id="storageMessage" hidden></div>
+          <div class="storage-grid" id="storageGrid"></div>
+        </section>
+
+        <section class="tab-panel" id="qbitPanel" role="tabpanel" aria-labelledby="qbitTabButton" hidden>
+          <div class="qbit-header">
+            <h2 id="qbitHeading">Status</h2>
+            <div class="qbit-actions">
+              <button class="secondary-button admin-only" id="startQbitButton" type="button" hidden>Start Session</button>
+              <button class="secondary-button admin-only danger-button" id="pauseQbitButton" type="button" hidden>Pause Session</button>
+              <button class="secondary-button" id="refreshQbitButton" type="button">Refresh</button>
+            </div>
+          </div>
+          <div class="qbit-summary admin-only" id="qbitSummary" hidden></div>
+          <div class="qbit-controls admin-only" id="qbitControls" hidden>
+            <input id="qbitSearch" type="search" placeholder="Search torrents" aria-label="Search torrents">
+            <select id="qbitFilter" aria-label="Filter torrents">
+              <option value="current" selected>Filters off — current downloads</option>
+              <option value="all">All torrents</option>
+              <option value="downloading">Downloading</option>
+              <option value="seeding">Seeding</option>
+              <option value="completed">Completed</option>
+              <option value="running">Running</option>
+              <option value="stopped">Stopped</option>
+              <option value="active">Active</option>
+              <option value="inactive">Inactive</option>
+              <option value="stalled">Stalled</option>
+            </select>
+            <select id="qbitSort" aria-label="Sort torrents">
+              <option value="name">Name</option>
+              <option value="size">Size</option>
+              <option value="progress">Progress</option>
+              <option value="status">Status</option>
+              <option value="seeds">Seeds</option>
+              <option value="peers">Peers</option>
+              <option value="dlspeed">Down Speed</option>
+              <option value="upspeed">Up Speed</option>
+              <option value="eta">ETA</option>
+              <option value="ratio">Ratio</option>
+            </select>
+            <button class="secondary-button qbit-sort-direction" id="qbitSortDirection" type="button" aria-label="Sort ascending">↑</button>
+          </div>
+          <div class="message" id="qbitMessage" hidden></div>
+          <div class="qbit-list" id="qbitList"></div>
+        </section>
+
+        <section class="tab-panel" id="configPanel" role="tabpanel" aria-labelledby="configTabButton" hidden>
+          <form class="config-form" id="configForm" autocomplete="off">
+            <label for="configAppVersion">App version</label>
+            <input id="configAppVersion" type="text" maxlength="32" required placeholder="v7.1">
+
+            <label for="configQbitUrl">qBittorrent URL</label>
+            <input id="configQbitUrl" type="text">
+
+            <label for="configPlexPath">Plex DB path</label>
+            <input id="configPlexPath" type="text">
+
+            <div class="config-header">
+              <label>Destinations</label>
+              <button class="secondary-button" id="addDestinationButton" type="button">Add</button>
+            </div>
+            <div class="config-destinations" id="configDestinations"></div>
+
+            <div class="config-header config-section-header">
+              <div>
+                <label>Discord User Mentions</label>
+                <p class="field-note">Match requester names to numeric Discord user IDs.</p>
+              </div>
+              <button class="secondary-button" id="addDiscordMappingButton" type="button">Add</button>
+            </div>
+            <div class="config-discord-mappings" id="configDiscordMappings"></div>
+
+            <button id="saveConfigButton" type="submit">Save</button>
+          </form>
+          <div class="message" id="configMessage" hidden></div>
+        </section>
+        </div>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
