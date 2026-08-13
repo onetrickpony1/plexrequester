@@ -27,7 +27,7 @@ PLEX_ANALYSIS_CACHE_LOCK = threading.RLock()
 PLEX_ANALYSIS_CACHE = {}
 PLEX_ANALYSIS_CACHE_SECONDS = 60
 MAX_TORRENT_FILE_SIZE = 10 * 1024 * 1024
-DEFAULT_APP_VERSION = "v7.1"
+DEFAULT_APP_VERSION = "v7.2"
 DEFAULT_SERVER_PORT = 8003
 USER_DATA_FILES = (
     "config.json",
@@ -2796,11 +2796,45 @@ class AppServer(ThreadingHTTPServer):
         super().server_close()
 
 
+def start_parent_process_monitor(app_server):
+    """Stop a packaged backend if its native launcher disappears unexpectedly."""
+    parent_value = str(os.environ.get("PLEX_REQUESTER_PARENT_PID", "")).strip()
+    if os.name != "nt" or not parent_value.isdigit():
+        return None
+    parent_pid = int(parent_value)
+    if parent_pid <= 0:
+        return None
+
+    def wait_for_parent():
+        import ctypes
+
+        synchronize = 0x00100000
+        infinite = 0xFFFFFFFF
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(synchronize, False, parent_pid)
+        if not handle:
+            return
+        try:
+            kernel32.WaitForSingleObject(handle, infinite)
+        finally:
+            kernel32.CloseHandle(handle)
+        app_server.shutdown()
+
+    monitor = threading.Thread(
+        target=wait_for_parent,
+        daemon=True,
+        name="PlexRequesterParentMonitor",
+    )
+    monitor.start()
+    return monitor
+
+
 def main():
     config = load_config()
     host = os.environ.get("APP_HOST", "0.0.0.0")
     port = int(os.environ.get("APP_PORT", configured_server_port(config)))
     server = AppServer((host, port), AppHandler, config)
+    start_parent_process_monitor(server)
     print(f"Plex Requester listening on http://{host}:{port}")
     print("Use the device's current Tailscale hostname or IP from another device.")
     server.serve_forever()

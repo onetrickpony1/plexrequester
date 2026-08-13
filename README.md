@@ -2,7 +2,7 @@
 
 Plex Requester is a lightweight, self-hosted web app for collecting movie and TV requests and sending magnet links or `.torrent` files to qBittorrent. It includes TMDb lookup, Plex library checks, request fulfillment tracking, configurable download destinations, Discord notifications, and a qBittorrent monitoring dashboard.
 
-The current default version label is **v7.1**. Administrators can edit the label from the Config tab; it is displayed beside the Plex Requester title for all users and cached locally to prevent a stale-version flash during refresh. Versions increment only when project documents, source code, or documentation are edited.
+The current default version label is **v7.2**. Administrators can edit the label from the Config tab; it is displayed beside the Plex Requester title for all users and cached locally to prevent a stale-version flash during refresh. Versions increment only when project documents, source code, or documentation are edited.
 
 For portable project context, coding preferences, compatibility rules, and a future-release checklist, see [CODEX_HANDOFF.md](CODEX_HANDOFF.md).
 
@@ -66,17 +66,25 @@ Uploaded torrent metadata is forwarded unchanged. Private flags, tracker URLs, p
 
 ## Requirements
 
-- Python 3.9 or newer.
 - qBittorrent with its Web UI enabled.
 - A modern web browser.
+- Python 3.9 or newer only when running from source; the standalone Windows executable includes Python.
 - Optional: a TMDb API key or API read access token.
 - Optional: access to the Plex library SQLite database.
 - Optional: a Discord webhook.
 - Optional: Tailscale or another private network for remote access.
 
-The optional Windows launcher can be built from `PlexRequesterLauncher.cs`. Running `server.py` directly works anywhere the configured filesystem paths and qBittorrent instance are reachable.
+The standalone Windows executable includes the Python runtime, backend, configuration template, and web assets. Running `server.py` directly remains supported anywhere the configured filesystem paths and qBittorrent instance are reachable.
 
 ## Quick start
+
+### Standalone Windows executable
+
+Download `Plex Requester_vX.X.exe` from the GitHub release and run it from any writable location. No source checkout or Python installation is required. On first launch it creates `%LOCALAPPDATA%\Plex Requester\config.json` from the bundled safe template, then starts the management window and server. Existing AppData files are reused without being overwritten.
+
+Use the administrator Config tab or edit the AppData `config.json` to replace all placeholder credentials, the administrator PIN, qBittorrent connection details, and media destinations before exposing the service.
+
+### Running from source
 
 1. Create the user data folder and copy the example configuration:
 
@@ -293,25 +301,29 @@ Private torrent files commonly contain personal tracker passkeys. Keep the brows
 
 ## Windows launcher
 
-The optional generated launcher executable provides a small management window that:
+The generated standalone executable provides a management window that:
 
-- Starts and stops `server.py`.
+- Starts and stops the embedded standalone backend without using a system Python installation.
 - Displays backend logs.
 - Opens the website.
 - Saves the TMDb key and Discord webhook.
 - Configures the HTTP port used locally and through Tailscale, then restarts the server.
+- Displays torrent rename history.
+- Stops the server when the window closes.
 
-The executable is intentionally excluded from source control because it is generated from the checked-in C# source. On Windows with .NET Framework installed, build and validate it from the project directory with:
+The release executable is intentionally excluded from source control because it is generated from `PlexRequesterLauncher.cs` plus a PyInstaller-packaged backend. Install PyInstaller in the build environment, then build and validate it from the project directory:
+
+```powershell
+python -m pip install pyinstaller
+```
 
 ```bat
 build_exe.bat
 ```
 
-The script verifies its inputs, treats C# compiler warnings as errors, checks that a non-empty executable was produced, and does not replace an existing executable when compilation fails. It reads `app.version` from `APP_CONFIG` when that override is set, otherwise from `%LOCALAPPDATA%\Plex Requester\config.json`. A valid version produces `Plex Requester_vX.X.exe`; if the configuration or version is missing or invalid, it produces `Plex Requester.exe` without a version suffix.
-- Displays torrent rename history.
-- Stops the Python server when the window closes.
+The build script verifies PyInstaller, the .NET Framework C# compiler, and all required inputs. It packages the Python backend and web assets, embeds that package in the native management window, verifies that the output is non-empty, and does not replace an existing release executable when either stage fails. It reads `app.version` from `APP_CONFIG` when that override is set, otherwise from `%LOCALAPPDATA%\Plex Requester\config.json`. A valid version produces `Plex Requester_vX.X.exe`; if the configuration or version is missing or invalid, it produces `Plex Requester.exe` without a version suffix.
 
-Python must be available as `python` in the Windows `PATH`.
+The resulting executable does not need Python, `server.py`, or the `static` directory beside it. It keeps an automatically managed copy of its embedded backend under `%LOCALAPPDATA%\Plex Requester\runtime` and PyInstaller expands that backend's Python runtime into a temporary directory while running. Persistent application data remains in the other established AppData files.
 
 ## Local data files
 
@@ -325,6 +337,7 @@ Plex Requester stores mutable application data in `%LOCALAPPDATA%\Plex Requester
 | `auth-sessions.json` | Active administrator session tokens |
 | `rename-history.jsonl` | Successful qBittorrent content renames |
 | `plex-requester.log` | Windows launcher and backend operational log |
+| `runtime/` | Automatically managed backend extracted from the standalone release EXE |
 
 On first access after upgrading, `config.json`, `requests.json`, `request-fulfillment-state.json`, `auth-sessions.json`, `rename-history.jsonl`, and `plex-requester.log` are copied from the application directory when the corresponding AppData file does not already exist. Existing AppData files are never overwritten. File names and JSON formats are unchanged, so these files can also be copied directly into or out of the AppData folder. `APP_CONFIG` remains available when an explicit alternate configuration path is required.
 
@@ -389,13 +402,13 @@ Current qBittorrent versions may return a JSON success object rather than the ol
 Plex Requester/
 ├── server.py                    Python HTTP server and integrations
 ├── check_config.py              Configuration validator
-├── test_server.py               Backend unit tests
+├── test_server.py               Backend and compatibility unit tests
 ├── config.example.json          Configuration template
 ├── .gitignore                   Private-data and generated-file exclusions
-├── build_exe.bat                Validated Windows launcher build
+├── build_exe.bat                Validated standalone two-stage build
 ├── start.ps1                    PowerShell startup script
-├── PlexRequesterLauncher.cs     Windows launcher source
-├── PlexRequesterIcon.ico        Windows launcher icon
+├── PlexRequesterLauncher.cs     Native standalone management window
+├── PlexRequesterIcon.ico        Windows application icon
 └── static/
     ├── index.html               Application markup
     ├── app.js                   Browser behavior

@@ -1,8 +1,11 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Reflection;
+using System.Security.Cryptography;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
@@ -64,14 +67,15 @@ public class PlexRequesterLauncher : Form
                 File.Copy(legacyPath, dataPath);
             }
         }
+        EnsureInitialConfig();
         logPath = Path.Combine(dataDir, "plex-requester.log");
         renameHistoryPath = Path.Combine(dataDir, "rename-history.jsonl");
         serverPort = LoadConfiguredPort();
-        string iconPath = Path.Combine(appDir, "PlexRequesterIcon.ico");
-        if (File.Exists(iconPath))
+        try
         {
-            Icon = new Icon(iconPath);
+            Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         }
+        catch { }
 
         var header = new Label
         {
@@ -374,28 +378,100 @@ public class PlexRequesterLauncher : Form
         return 8003;
     }
 
+    private void EnsureInitialConfig()
+    {
+        string configPath = Path.Combine(dataDir, "config.json");
+        if (File.Exists(configPath))
+        {
+            return;
+        }
+
+        using (Stream source = Assembly.GetExecutingAssembly().GetManifestResourceStream("PlexRequesterConfigExample.json"))
+        {
+            if (source == null)
+            {
+                throw new InvalidOperationException("The embedded configuration template is missing.");
+            }
+            using (var target = new FileStream(configPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                source.CopyTo(target);
+            }
+        }
+    }
+
+    private string EnsureBackendExecutable()
+    {
+        string runtimeDir = Path.Combine(dataDir, "runtime");
+        Directory.CreateDirectory(runtimeDir);
+        string backendPath = Path.Combine(runtimeDir, "PlexRequesterBackend.exe");
+        string temporaryPath = backendPath + ".new";
+
+        using (Stream source = Assembly.GetExecutingAssembly().GetManifestResourceStream("PlexRequesterBackend.exe"))
+        {
+            if (source == null)
+            {
+                throw new InvalidOperationException("The embedded Plex Requester backend is missing.");
+            }
+            using (var target = new FileStream(temporaryPath, FileMode.Create, FileAccess.Write, FileShare.None))
+            {
+                source.CopyTo(target);
+            }
+        }
+
+        bool replace = !File.Exists(backendPath) || !FilesMatch(temporaryPath, backendPath);
+        if (replace)
+        {
+            File.Copy(temporaryPath, backendPath, true);
+        }
+        File.Delete(temporaryPath);
+        return backendPath;
+    }
+
+    private static bool FilesMatch(string firstPath, string secondPath)
+    {
+        var firstInfo = new FileInfo(firstPath);
+        var secondInfo = new FileInfo(secondPath);
+        if (firstInfo.Length != secondInfo.Length)
+        {
+            return false;
+        }
+        using (SHA256 algorithm = SHA256.Create())
+        using (FileStream first = File.OpenRead(firstPath))
+        using (FileStream second = File.OpenRead(secondPath))
+        {
+            byte[] firstHash = algorithm.ComputeHash(first);
+            byte[] secondHash = algorithm.ComputeHash(second);
+            return StructuralComparisons.StructuralEqualityComparer.Equals(firstHash, secondHash);
+        }
+    }
+
     private void StartServer()
     {
-        string serverPath = Path.Combine(appDir, "server.py");
-        if (!File.Exists(serverPath))
+        string backendPath;
+        try
         {
-            AppendLog("server.py was not found next to the launcher executable.");
-            SetStatus("Server file missing.");
+            backendPath = EnsureBackendExecutable();
+        }
+        catch (Exception ex)
+        {
+            AppendLog("Could not prepare the standalone backend: " + ex.Message);
+            SetStatus("Backend preparation failed.");
             stopButton.Text = "Close";
             return;
         }
 
         var start = new ProcessStartInfo
         {
-            FileName = "python",
-            Arguments = "-u \"" + serverPath + "\"",
-            WorkingDirectory = appDir,
+            FileName = backendPath,
+            Arguments = "",
+            WorkingDirectory = dataDir,
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true
         };
         start.EnvironmentVariables["APP_PORT"] = serverPort.ToString();
+        start.EnvironmentVariables["PLEX_REQUESTER_PARENT_PID"] = Process.GetCurrentProcess().Id.ToString();
 
         try
         {

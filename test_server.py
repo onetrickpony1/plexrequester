@@ -23,6 +23,14 @@ class ServerPortConfigTests(unittest.TestCase):
                 server.DEFAULT_SERVER_PORT,
             )
 
+    def test_parent_monitor_is_disabled_without_packaged_launcher_environment(self):
+        with mock.patch.dict(server.os.environ, {}, clear=True):
+            self.assertIsNone(server.start_parent_process_monitor(mock.Mock()))
+
+    def test_parent_monitor_rejects_invalid_parent_pid(self):
+        with mock.patch.dict(server.os.environ, {"PLEX_REQUESTER_PARENT_PID": "invalid"}, clear=False):
+            self.assertIsNone(server.start_parent_process_monitor(mock.Mock()))
+
 
 class UserDataStorageTests(unittest.TestCase):
     def setUp(self):
@@ -70,7 +78,7 @@ class UserDataStorageTests(unittest.TestCase):
 
 
 class AppVersionConfigTests(unittest.TestCase):
-    def payload(self, version="v7.1"):
+    def payload(self, version="v7.2"):
         return {
             "app": {"version": version},
             "qbittorrent": {"url": "http://localhost:8080"},

@@ -19,10 +19,10 @@ Use this document as standing context when working with me in a new Codex accoun
 - Increment the Plex Requester version by `0.1` whenever project source code or project documentation is edited.
 - Do not increment the version for read-only investigation, explanations, or answers that make no file changes.
 - Carry the version normally after `.9`: for example, `v5.9` becomes `v6.0`.
-- The version for the changes that created this document is `v7.1`.
+- The version for the changes that created this document was `v7.1`; the current code may be newer.
 - Keep the default version in source, the safe example configuration, the README, frontend fallback text, and the live AppData configuration consistent when applicable.
 - The administrator can edit the displayed version from the Config tab. Do not overwrite a deliberate later value without first understanding why it differs.
-- The Windows build output should be named `Plex Requester_vX.X.exe` when a valid configured version can be read. If no valid version is available, build `Plex Requester.exe` without a version suffix.
+- The Windows build output should be named `Plex Requester_vX.X.exe` when a valid configured version can be read. If no valid version is available, build `Plex Requester.exe` without a version suffix. Release executables must include Python, the backend, and web assets so they run without loose source files or a system Python installation.
 
 ## Backward-compatibility rule
 
@@ -101,6 +101,7 @@ Expected runtime files include:
 - `request-fulfillment-state.json`
 - `rename-history.jsonl`
 - `plex-requester.log`
+- `runtime/` for the standalone launcher's automatically managed embedded backend
 
 Important rules:
 
@@ -116,9 +117,9 @@ Important rules:
 - The default Plex Requester web port is `8003`.
 - The server/Tailscale port is configurable from the Windows backend GUI and stored as `server.port` in AppData `config.json`.
 - Older configurations without `server.port` must continue to use port 8003.
-- The launcher must use the selected port consistently for starting the child server, its status text, logs, and **Open Website** action.
+- The standalone launcher must use the selected port consistently for its embedded backend, status text, logs, and **Open Website** action.
 - A direct `APP_PORT` environment override remains supported when running the Python server outside the launcher.
-- `build_exe.bat` must locate the .NET Framework compiler, compile warnings as errors, check that its inputs exist, verify that a non-empty executable was produced, and preserve the previous executable if compilation fails.
+- `build_exe.bat` must verify PyInstaller, the C# compiler, and its inputs; package the Python runtime, backend, and web assets; embed that package into the native launcher; verify that a non-empty single release executable was produced; and preserve the previous executable if either build stage fails.
 
 ## UI expectations
 
@@ -145,10 +146,10 @@ Before calling an edit complete:
 
 ## Current baseline when this handoff was written
 
-- Version: `v7.1`
+- Version when this handoff was created: `v7.1`
 - Default web port: `8003`
 - AppData directory: `%LOCALAPPDATA%\Plex Requester`
 - Test suite baseline before this document: 39 passing tests
-- Expected build name with the current version: `Plex Requester_v7.1.exe`
+- Build names follow the current configured version: `Plex Requester_vX.X.exe`
 
 This baseline is historical context, not a reason to revert later changes. In a future checkout, trust the newest valid code and configuration after reconciling them with the standing rules above.

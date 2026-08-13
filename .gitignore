@@ -5,6 +5,7 @@ request-fulfillment-state.json
 auth-sessions.json
 rename-history.jsonl
 plex-requester.log
+runtime/
 
 # Local environment and secret files
 .env
@@ -31,6 +32,9 @@ Plex Requester*.exe
 *.pdb
 bin/
 obj/
+.standalone-build/
+.standalone-dist/
+*.spec
 
 # Editor and operating-system files
 .vscode/

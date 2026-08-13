@@ -1018,7 +1018,7 @@ async function loadAdminConfig() {
 }
 
 function renderConfig(config) {
-  configAppVersion.value = config.app?.version || "v7.1";
+  configAppVersion.value = config.app?.version || "v7.2";
   configQbitUrl.value = config.qbittorrent?.url || "";
   configPlexPath.value = config.plex?.databasePath || "";
   configDestinations.innerHTML = "";
