@@ -15,7 +15,8 @@
             <span class="app-version" id="appVersion" aria-label="Application version"></span>
           </div>
           <div class="mast-actions">
-            <a class="external-link" href="https://ext.to/" target="_blank" rel="noopener noreferrer">Open ext.to</a>
+            <a class="external-link admin-only" href="https://ext.to/" target="_blank" rel="noopener noreferrer" hidden>ext.to</a>
+            <a class="external-link authenticated-only" href="https://yu-scene.net/" target="_blank" rel="noopener noreferrer" hidden>yu-scene.net</a>
             <button class="secondary-button logout-button" id="logoutButton" type="button">Login</button>
           </div>
         </div>
@@ -232,13 +233,17 @@
         <section class="tab-panel" id="configPanel" role="tabpanel" aria-labelledby="configTabButton" hidden>
           <form class="config-form" id="configForm" autocomplete="off">
             <label for="configAppVersion">App version</label>
-            <input id="configAppVersion" type="text" maxlength="32" required placeholder="v7.8">
+            <input id="configAppVersion" type="text" maxlength="32" required placeholder="v7.9">
 
             <label for="configQbitUrl">qBittorrent URL</label>
             <input id="configQbitUrl" type="text">
 
             <label for="configPlexPath">Plex DB path</label>
             <input id="configPlexPath" type="text">
+
+            <label for="configDiscordWebhook">Request and fulfillment Discord webhook</label>
+            <input id="configDiscordWebhook" type="password" autocomplete="new-password" placeholder="https://discord.com/api/webhooks/…">
+            <p class="field-note">Sends new-request and Plex-fulfillment notifications to this webhook's channel.</p>
 
             <label for="configAdminReminderWebhook">Admin reminder Discord webhook</label>
             <input id="configAdminReminderWebhook" type="password" autocomplete="new-password" placeholder="https://discord.com/api/webhooks/…">

@@ -1,6 +1,6 @@
 {
   "app": {
-    "version": "v7.8"
+    "version": "v7.9"
   },
   "server": {
     "port": 8003
@@ -18,8 +18,8 @@
   },
   "notifications": {
     "discordUserMappings": {},
-    "discordWebhookUrl": "",
-    "adminReminderWebhookUrl": "",
+    "discordWebhookUrl": "https://discord.com/api/webhooks/123/request-token",
+    "adminReminderWebhookUrl": "https://discord.com/api/webhooks/456/reminder-token",
     "adminReminderIntervalMinutes": 60
   },
   "adminPin": "change-this-pin",
@@ -30,7 +30,8 @@
       "path": "D:\\Media\\Movies",
       "paths": [
         "D:\\Media\\Movies"
-      ]
+      ],
+      "browseSubfolders": false
     },
     {
       "id": "tv_shows",

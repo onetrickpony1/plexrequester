@@ -2,7 +2,7 @@
 
 Plex Requester is a lightweight, self-hosted web app for collecting movie and TV requests and sending magnet links or `.torrent` files to qBittorrent. It includes TMDb lookup, Plex library checks, request fulfillment tracking, configurable download destinations, Discord notifications, and a qBittorrent monitoring dashboard.
 
-The current default version label is **v7.8**. Administrators can edit the label from the Config tab; it is displayed beside the Plex Requester title for all users and cached locally to prevent a stale-version flash during refresh. Versions increment only when project documents, source code, or documentation are edited.
+The current default version label is **v7.9**. Administrators can edit the label from the Config tab; it is displayed beside the Plex Requester title for all users and cached locally to prevent a stale-version flash during refresh. Versions increment only when project documents, source code, or documentation are edited.
 
 For portable project context, coding preferences, compatibility rules, and a future-release checklist, see [CODEX_HANDOFF.md](CODEX_HANDOFF.md).
 
@@ -285,9 +285,9 @@ The fulfillment monitor checks pending TMDb-backed requests after startup and th
 
 ## Discord notifications
 
-Set `notifications.discordWebhookUrl` or `DISCORD_WEBHOOK_URL` to enable notifications.
+Use the administrator Config tab to set the Discord webhook for new-request and fulfillment notifications.
 
-Set `notifications.adminReminderWebhookUrl`, use the administrator Config tab, or set `DISCORD_ADMIN_REMINDER_WEBHOOK_URL` to send reminders to a separate Discord channel. The Config tab's **Request reminder interval (minutes)** setting controls both the first reminder delay and subsequent repeats; it defaults to 60 minutes and accepts 1 through 10080 minutes. Each overdue request is messaged separately. Administrators can mute or unmute an individual request from the Requests tab. Reminder messages disable Discord mention parsing.
+Use the same Config tab to set a separate admin reminder Discord webhook. The Config tab's **Request reminder interval (minutes)** setting controls both the first reminder delay and subsequent repeats; it defaults to 60 minutes and accepts 1 through 10080 minutes. Each overdue request is messaged separately. Administrators can mute or unmute an individual request from the Requests tab. Reminder messages disable Discord mention parsing.
 
 Notifications can include:
 

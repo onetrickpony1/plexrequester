@@ -59,6 +59,7 @@ const configForm = document.querySelector("#configForm");
 const configAppVersion = document.querySelector("#configAppVersion");
 const configQbitUrl = document.querySelector("#configQbitUrl");
 const configPlexPath = document.querySelector("#configPlexPath");
+const configDiscordWebhook = document.querySelector("#configDiscordWebhook");
 const configAdminReminderWebhook = document.querySelector("#configAdminReminderWebhook");
 const configAdminReminderInterval = document.querySelector("#configAdminReminderInterval");
 const configDestinations = document.querySelector("#configDestinations");
@@ -412,6 +413,9 @@ function applyAuth(role) {
   logoutButton.textContent = isAdmin() ? "Logout" : "Login";
   document.querySelectorAll(".admin-only").forEach((element) => {
     element.hidden = !isAdmin();
+  });
+  document.querySelectorAll(".authenticated-only").forEach((element) => {
+    element.hidden = !authRole;
   });
 
   const activeAdminPanel = !downloadPanel.hidden || !configPanel.hidden;
@@ -1072,9 +1076,10 @@ async function loadAdminConfig() {
 }
 
 function renderConfig(config) {
-  configAppVersion.value = config.app?.version || "v7.8";
+  configAppVersion.value = config.app?.version || "v7.9";
   configQbitUrl.value = config.qbittorrent?.url || "";
   configPlexPath.value = config.plex?.databasePath || "";
+  configDiscordWebhook.value = config.discordWebhookUrl || "";
   configAdminReminderWebhook.value = config.adminReminderWebhookUrl || "";
   configAdminReminderInterval.value = config.adminReminderIntervalMinutes || 60;
   configDestinations.innerHTML = "";
@@ -1163,6 +1168,7 @@ function collectConfig() {
       databasePath: configPlexPath.value.trim(),
     },
     discordUserMappings: collectDiscordUserMappings(),
+    discordWebhookUrl: configDiscordWebhook.value.trim(),
     adminReminderWebhookUrl: configAdminReminderWebhook.value.trim(),
     adminReminderIntervalMinutes: Number(configAdminReminderInterval.value),
     destinations: Array.from(configDestinations.querySelectorAll(".config-destination")).map((row) => ({

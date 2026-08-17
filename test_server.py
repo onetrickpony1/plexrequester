@@ -78,7 +78,7 @@ class UserDataStorageTests(unittest.TestCase):
 
 
 class AppVersionConfigTests(unittest.TestCase):
-    def payload(self, version="v7.8"):
+    def payload(self, version="v7.9"):
         return {
             "app": {"version": version},
             "qbittorrent": {"url": "http://localhost:8080"},
@@ -153,7 +153,7 @@ class MultiDirectoryDestinationTests(unittest.TestCase):
     def test_admin_config_saves_multiple_paths_and_legacy_first_path(self):
         config = {"notifications": {}}
         payload = {
-            "app": {"version": "v7.8"},
+            "app": {"version": "v7.9"},
             "qbittorrent": {"url": "http://localhost:8080"},
             "plex": {"databasePath": ""},
             "discordUserMappings": [],
@@ -380,6 +380,35 @@ class DiscordRequesterMentionTests(unittest.TestCase):
         config = self.config()
         self.assertEqual(server.discord_user_id_for_requester(config, "Matthew"), "")
         self.assertEqual(server.editable_config(config)["discordUserMappings"], [])
+        self.assertEqual(
+            server.editable_config(config)["discordWebhookUrl"],
+            "https://discord.invalid/webhook",
+        )
+
+    def test_admin_config_saves_request_webhook(self):
+        config = self.config()
+        payload = self.editable_payload([])
+        payload["discordWebhookUrl"] = "https://discord.com/api/webhooks/456/request-token"
+        server.apply_editable_config(config, payload)
+        self.assertEqual(
+            config["notifications"]["discordWebhookUrl"],
+            "https://discord.com/api/webhooks/456/request-token",
+        )
+
+    def test_older_admin_payload_preserves_request_webhook(self):
+        config = self.config()
+        server.apply_editable_config(config, self.editable_payload([]))
+        self.assertEqual(
+            config["notifications"]["discordWebhookUrl"],
+            "https://discord.invalid/webhook",
+        )
+
+    def test_invalid_request_webhook_is_rejected(self):
+        config = self.config()
+        payload = self.editable_payload([])
+        payload["discordWebhookUrl"] = "https://example.com/not-discord"
+        with self.assertRaisesRegex(ValueError, "valid HTTPS Discord webhook"):
+            server.apply_editable_config(config, payload)
 
     def test_older_admin_payload_preserves_reminder_webhook(self):
         config = self.config()

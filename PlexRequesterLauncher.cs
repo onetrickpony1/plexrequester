@@ -15,16 +15,13 @@ public class PlexRequesterLauncher : Form
     private readonly TextBox logBox;
     private readonly ListView historyList;
     private readonly TextBox tmdbKeyBox;
-    private readonly TextBox discordWebhookBox;
     private readonly Label serverPortLabel;
     private readonly NumericUpDown serverPortBox;
     private readonly Label statusLabel;
     private readonly Label tmdbKeyStatus;
-    private readonly Label discordWebhookStatus;
     private readonly Button openButton;
     private readonly Button stopButton;
     private readonly Button saveTmdbKeyButton;
-    private readonly Button saveDiscordWebhookButton;
     private readonly Button saveServerPortButton;
     private readonly Button refreshHistoryButton;
     private readonly Timer historyRefreshTimer;
@@ -139,46 +136,12 @@ public class PlexRequesterLauncher : Form
         saveTmdbKeyButton.Location = new Point(ClientSize.Width - 148, 119);
         saveTmdbKeyButton.Click += delegate { SaveTmdbKey(); };
 
-        discordWebhookStatus = new Label
-        {
-            Text = "Discord: checking config...",
-            AutoSize = true,
-            Font = new Font("Segoe UI", 9, FontStyle.Bold),
-            Location = new Point(22, 154),
-            ForeColor = Color.FromArgb(157, 175, 183)
-        };
-
-        discordWebhookBox = new TextBox
-        {
-            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
-            BackColor = Color.FromArgb(11, 17, 23),
-            BorderStyle = BorderStyle.FixedSingle,
-            ForeColor = Color.FromArgb(238, 245, 248),
-            Font = new Font("Segoe UI", 10, FontStyle.Regular),
-            Location = new Point(22, 178),
-            PasswordChar = '*',
-            Size = new Size(ClientSize.Width - 190, 28)
-        };
-        discordWebhookBox.KeyDown += delegate(object sender, KeyEventArgs args)
-        {
-            if (args.KeyCode == Keys.Enter)
-            {
-                args.SuppressKeyPress = true;
-                SaveDiscordWebhook();
-            }
-        };
-
-        saveDiscordWebhookButton = CreateButton("Save Discord");
-        saveDiscordWebhookButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        saveDiscordWebhookButton.Location = new Point(ClientSize.Width - 148, 173);
-        saveDiscordWebhookButton.Click += delegate { SaveDiscordWebhook(); };
-
         serverPortLabel = new Label
         {
             Text = "Server / Tailscale port",
             AutoSize = true,
             Font = new Font("Segoe UI", 9, FontStyle.Bold),
-            Location = new Point(22, 218),
+            Location = new Point(22, 164),
             ForeColor = Color.FromArgb(157, 175, 183)
         };
 
@@ -188,7 +151,7 @@ public class PlexRequesterLauncher : Form
             BorderStyle = BorderStyle.FixedSingle,
             ForeColor = Color.FromArgb(238, 245, 248),
             Font = new Font("Segoe UI", 10, FontStyle.Regular),
-            Location = new Point(188, 212),
+            Location = new Point(188, 158),
             Minimum = 1,
             Maximum = 65535,
             Size = new Size(110, 28),
@@ -205,14 +168,14 @@ public class PlexRequesterLauncher : Form
 
         saveServerPortButton = CreateButton("Save Port");
         saveServerPortButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        saveServerPortButton.Location = new Point(ClientSize.Width - 148, 207);
+        saveServerPortButton.Location = new Point(ClientSize.Width - 148, 153);
         saveServerPortButton.Click += delegate { SaveServerPort(); };
 
         mainTabs = new TabControl
         {
             Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
-            Location = new Point(22, 258),
-            Size = new Size(ClientSize.Width - 44, ClientSize.Height - 280),
+            Location = new Point(22, 204),
+            Size = new Size(ClientSize.Width - 44, ClientSize.Height - 226),
             Font = new Font("Segoe UI", 9, FontStyle.Bold)
         };
 
@@ -279,9 +242,6 @@ public class PlexRequesterLauncher : Form
         Controls.Add(tmdbKeyStatus);
         Controls.Add(tmdbKeyBox);
         Controls.Add(saveTmdbKeyButton);
-        Controls.Add(discordWebhookStatus);
-        Controls.Add(discordWebhookBox);
-        Controls.Add(saveDiscordWebhookButton);
         Controls.Add(serverPortLabel);
         Controls.Add(serverPortBox);
         Controls.Add(saveServerPortButton);
@@ -297,7 +257,6 @@ public class PlexRequesterLauncher : Form
         Load += delegate
         {
             UpdateTmdbKeyStatus();
-            UpdateDiscordWebhookStatus();
             LoadRenameHistory();
             historyRefreshTimer.Start();
             StartServer();
@@ -329,10 +288,8 @@ public class PlexRequesterLauncher : Form
         stopButton.Location = new Point(ClientSize.Width - 148, 24);
         tmdbKeyBox.Size = new Size(ClientSize.Width - 190, 28);
         saveTmdbKeyButton.Location = new Point(ClientSize.Width - 148, 119);
-        discordWebhookBox.Size = new Size(ClientSize.Width - 190, 28);
-        saveDiscordWebhookButton.Location = new Point(ClientSize.Width - 148, 173);
-        saveServerPortButton.Location = new Point(ClientSize.Width - 148, 207);
-        mainTabs.Size = new Size(ClientSize.Width - 44, ClientSize.Height - 280);
+        saveServerPortButton.Location = new Point(ClientSize.Width - 148, 153);
+        mainTabs.Size = new Size(ClientSize.Width - 44, ClientSize.Height - 226);
         if (mainTabs.TabPages.Count > 1)
         {
             LayoutHistoryTab(mainTabs.TabPages[1]);
@@ -604,47 +561,6 @@ public class PlexRequesterLauncher : Form
         }
     }
 
-    private void SaveDiscordWebhook()
-    {
-        string webhookUrl = discordWebhookBox.Text.Trim();
-
-        try
-        {
-            string configPath = Path.Combine(dataDir, "config.json");
-            string sourcePath = File.Exists(configPath) ? configPath : Path.Combine(appDir, "config.example.json");
-            var serializer = new JavaScriptSerializer();
-            serializer.MaxJsonLength = int.MaxValue;
-            Dictionary<string, object> config;
-
-            if (File.Exists(sourcePath))
-            {
-                config = serializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(sourcePath));
-            }
-            else
-            {
-                config = new Dictionary<string, object>();
-            }
-
-            var notifications = new Dictionary<string, object>();
-            if (config.ContainsKey("notifications") && config["notifications"] is Dictionary<string, object>)
-            {
-                notifications = (Dictionary<string, object>)config["notifications"];
-            }
-            notifications["discordWebhookUrl"] = webhookUrl;
-            config["notifications"] = notifications;
-
-            File.WriteAllText(configPath, serializer.Serialize(config));
-            discordWebhookBox.Text = "";
-            UpdateDiscordWebhookStatus();
-            AppendLog(webhookUrl.Length > 0 ? "Discord webhook saved to config.json." : "Discord webhook cleared.");
-            RestartServer();
-        }
-        catch (Exception ex)
-        {
-            AppendLog("Could not save Discord webhook: " + ex.Message);
-        }
-    }
-
     private void SaveServerPort()
     {
         int selectedPort = Decimal.ToInt32(serverPortBox.Value);
@@ -709,33 +625,6 @@ public class PlexRequesterLauncher : Form
         catch
         {
             tmdbKeyStatus.Text = "TMDb key: config could not be read";
-        }
-    }
-
-    private void UpdateDiscordWebhookStatus()
-    {
-        try
-        {
-            string configPath = Path.Combine(dataDir, "config.json");
-            if (!File.Exists(configPath))
-            {
-                discordWebhookStatus.Text = "Discord: not configured";
-                return;
-            }
-
-            var serializer = new JavaScriptSerializer();
-            var config = serializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(configPath));
-            bool configured = false;
-            if (config.ContainsKey("notifications") && config["notifications"] is Dictionary<string, object>)
-            {
-                var notifications = (Dictionary<string, object>)config["notifications"];
-                configured = notifications.ContainsKey("discordWebhookUrl") && Convert.ToString(notifications["discordWebhookUrl"]).Trim().Length > 0;
-            }
-            discordWebhookStatus.Text = configured ? "Discord: configured" : "Discord: not configured";
-        }
-        catch
-        {
-            discordWebhookStatus.Text = "Discord: config could not be read";
         }
     }
 

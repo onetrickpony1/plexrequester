@@ -27,7 +27,7 @@ PLEX_ANALYSIS_CACHE_LOCK = threading.RLock()
 PLEX_ANALYSIS_CACHE = {}
 PLEX_ANALYSIS_CACHE_SECONDS = 60
 MAX_TORRENT_FILE_SIZE = 10 * 1024 * 1024
-DEFAULT_APP_VERSION = "v7.8"
+DEFAULT_APP_VERSION = "v7.9"
 DEFAULT_SERVER_PORT = 8003
 DEFAULT_ADMIN_REMINDER_INTERVAL_MINUTES = 60
 MIN_ADMIN_REMINDER_INTERVAL_MINUTES = 1
@@ -2036,6 +2036,7 @@ def editable_config(config):
             }
             for requester_name, discord_id in discord_mappings.items()
         ],
+        "discordWebhookUrl": discord_webhook_url(config),
         "adminReminderWebhookUrl": admin_reminder_webhook_url(config),
         "adminReminderIntervalMinutes": admin_reminder_interval_minutes(config),
         "destinations": [
@@ -2058,6 +2059,12 @@ def apply_editable_config(config, payload):
     destinations = payload.get("destinations", [])
     discord_mappings = clean_discord_user_mappings(payload.get("discordUserMappings", []))
     notifications = config.setdefault("notifications", {})
+    current_webhook = notifications.get("discordWebhookUrl", "")
+    webhook = (
+        validate_discord_webhook_url(payload.get("discordWebhookUrl"))
+        if "discordWebhookUrl" in payload
+        else current_webhook
+    )
     current_reminder_webhook = notifications.get("adminReminderWebhookUrl", "")
     reminder_webhook = validate_discord_webhook_url(
         payload.get("adminReminderWebhookUrl", current_reminder_webhook)
@@ -2089,6 +2096,7 @@ def apply_editable_config(config, payload):
     config.setdefault("qbittorrent", {})["url"] = qbit_url
     config.setdefault("plex", {})["databasePath"] = str(plex.get("databasePath", "")).strip()
     notifications["discordUserMappings"] = discord_mappings
+    notifications["discordWebhookUrl"] = webhook
     notifications["adminReminderWebhookUrl"] = reminder_webhook
     notifications["adminReminderIntervalMinutes"] = reminder_interval
 
