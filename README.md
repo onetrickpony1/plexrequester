@@ -2,7 +2,7 @@
 
 Plex Requester is a lightweight, self-hosted web app for collecting movie and TV requests and sending magnet links or `.torrent` files to qBittorrent. It includes TMDb lookup, Plex library checks, request fulfillment tracking, configurable download destinations, Discord notifications, and a qBittorrent monitoring dashboard.
 
-The current default version label is **v7.9**. Administrators can edit the label from the Config tab; it is displayed beside the Plex Requester title for all users and cached locally to prevent a stale-version flash during refresh. Versions increment only when project documents, source code, or documentation are edited.
+The current default version label is **v8.0**. Administrators can edit the label from the Config tab; it is displayed beside the Plex Requester title for all users and cached locally to prevent a stale-version flash during refresh. Versions increment only when project documents, source code, or documentation are edited.
 
 For portable project context, coding preferences, compatibility rules, and a future-release checklist, see [CODEX_HANDOFF.md](CODEX_HANDOFF.md).
 
@@ -21,7 +21,7 @@ The backend uses only the Python standard library. The frontend is plain HTML, C
 - Refresh the visible request list every five seconds using cached fulfillment state while Plex reconciliation runs in the background.
 - Mark requests fulfilled manually as an administrator.
 - Send optional Discord notifications for new and fulfilled requests.
-- Send a separate Discord webhook message for each overdue request using an administrator-configurable reminder interval.
+- Send a polished Discord summary of all open, unmuted requests using an administrator-configurable reminder interval.
 - Let administrators mute or unmute reminders on individual requests.
 - Mention a mapped Discord user when their request is created and fulfilled without enabling arbitrary mentions.
 
@@ -287,7 +287,7 @@ The fulfillment monitor checks pending TMDb-backed requests after startup and th
 
 Use the administrator Config tab to set the Discord webhook for new-request and fulfillment notifications.
 
-Use the same Config tab to set a separate admin reminder Discord webhook. The Config tab's **Request reminder interval (minutes)** setting controls both the first reminder delay and subsequent repeats; it defaults to 60 minutes and accepts 1 through 10080 minutes. Each overdue request is messaged separately. Administrators can mute or unmute an individual request from the Requests tab. Reminder messages disable Discord mention parsing.
+Use the same Config tab to set a separate admin reminder Discord webhook. The Config tab's **Request reminder interval (minutes)** setting controls both the first reminder delay and subsequent repeats; it defaults to 60 minutes and accepts 1 through 10080 minutes. When a reminder is due, one Discord embed summarizes every open, unmuted request with its requester, requested quality, and waiting time. Waiting times use days after 24 hours. Administrators can mute or unmute an individual request from the Requests tab. Reminder messages disable Discord mention parsing.
 
 Notifications can include:
 

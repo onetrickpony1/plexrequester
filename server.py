@@ -27,7 +27,7 @@ PLEX_ANALYSIS_CACHE_LOCK = threading.RLock()
 PLEX_ANALYSIS_CACHE = {}
 PLEX_ANALYSIS_CACHE_SECONDS = 60
 MAX_TORRENT_FILE_SIZE = 10 * 1024 * 1024
-DEFAULT_APP_VERSION = "v7.9"
+DEFAULT_APP_VERSION = "v8.0"
 DEFAULT_SERVER_PORT = 8003
 DEFAULT_ADMIN_REMINDER_INTERVAL_MINUTES = 60
 MIN_ADMIN_REMINDER_INTERVAL_MINUTES = 1
@@ -1611,36 +1611,63 @@ def discord_fulfillment_message(item, fulfillment, discord_user_id=""):
     return "\n".join(lines)
 
 
-def discord_admin_reminder_message(item, now=None):
+def discord_waiting_time(item, now=None):
     now = int(time.time()) if now is None else int(now)
     requested_at = int_value(item.get("requestedAt"))
     age_seconds = max(0, now - requested_at) if requested_at else 0
     age_minutes = max(1, age_seconds // 60)
+    if age_minutes >= 24 * 60:
+        days, remaining_minutes = divmod(age_minutes, 24 * 60)
+        hours, minutes = divmod(remaining_minutes, 60)
+        parts = [f"{days}d"]
+        if hours:
+            parts.append(f"{hours}h")
+        if minutes:
+            parts.append(f"{minutes}m")
+        return " ".join(parts)
     if age_minutes >= 60:
         hours, minutes = divmod(age_minutes, 60)
-        waiting = f"{hours}h {minutes}m" if minutes else f"{hours}h"
-    else:
-        waiting = f"{age_minutes}m"
-    return "\n".join([
-        "Unfulfilled Plex request reminder",
-        f"Title: {request_display_title(item)}",
-        f"Requester: {item.get('requester') or 'Unknown'}",
-        f"Requested quality: {item.get('quality') or '1080p'}",
-        f"Waiting: {waiting}",
-    ])
+        return f"{hours}h {minutes}m" if minutes else f"{hours}h"
+    return f"{age_minutes}m"
 
 
-def send_discord_webhook(url, content, allowed_user_id=""):
+def discord_admin_reminder_embed(config, items, now=None):
+    count = len(items)
+    fields = []
+    for item in items:
+        fields.append({
+            "name": request_display_title(item)[:256],
+            "value": "\n".join([
+                f"**Requester:** {str(item.get('requester') or 'Unknown')[:160]}",
+                f"**Quality:** {str(item.get('quality') or '1080p')[:80]}",
+                f"**Waiting:** {discord_waiting_time(item, now)}",
+            ])[:1024],
+            "inline": False,
+        })
+    interval = admin_reminder_interval_minutes(config)
+    return {
+        "title": "Unfulfilled Plex Requests",
+        "description": f"{count} unmuted request{'s are' if count != 1 else ' is'} still waiting to be fulfilled.",
+        "color": 0xE5A00D,
+        "fields": fields,
+        "footer": {
+            "text": f"Reminder schedule: every {interval} minute{'s' if interval != 1 else ''} • Muted requests are excluded",
+        },
+    }
+
+
+def send_discord_webhook(url, content="", allowed_user_id="", embeds=None):
     url = str(url or "").strip()
     if not url:
         return False
     allowed_mentions = {"parse": []}
     if allowed_user_id:
         allowed_mentions["users"] = [validate_discord_user_id(allowed_user_id)]
-    payload = {
-        "content": str(content)[:2000],
-        "allowed_mentions": allowed_mentions,
-    }
+    payload = {"allowed_mentions": allowed_mentions}
+    if content:
+        payload["content"] = str(content)[:2000]
+    if embeds:
+        payload["embeds"] = list(embeds)[:10]
     req = request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
@@ -1684,12 +1711,15 @@ def notify_request_fulfilled(config, item, fulfillment):
         return False
 
 
-def notify_admin_unfulfilled_request(config, item, now=None):
+def notify_admin_unfulfilled_requests(config, items, now=None):
     url = admin_reminder_webhook_url(config)
-    if not url:
+    if not url or not items:
         return False
     try:
-        return send_discord_webhook(url, discord_admin_reminder_message(item, now))
+        return send_discord_webhook(
+            url,
+            embeds=[discord_admin_reminder_embed(config, items, now)],
+        )
     except Exception as exc:
         print(f"Could not send Discord admin reminder: {exc}", flush=True)
         return False
@@ -1701,6 +1731,8 @@ def send_due_admin_reminders(config, items, history, now=None):
     now = int(time.time()) if now is None else int(now)
     reminder_interval = admin_reminder_interval_seconds(config)
     changed = False
+    active_requests = []
+    reminder_due = False
     for item in items:
         if bool(item.get("reminderMuted")):
             continue
@@ -1723,14 +1755,20 @@ def send_due_admin_reminders(config, items, history, now=None):
             continue
         requested_at = int_value(item.get("requestedAt")) or int_value(entry.get("firstSeenAt")) or now
         last_reminder_at = int_value(entry.get("lastAdminReminderAt"))
-        if now - requested_at < reminder_interval:
-            continue
-        if last_reminder_at and now - last_reminder_at < reminder_interval:
-            continue
-        if notify_admin_unfulfilled_request(config, item, now):
+        active_requests.append((item, entry))
+        if now - requested_at >= reminder_interval and (
+            not last_reminder_at or now - last_reminder_at >= reminder_interval
+        ):
+            reminder_due = True
+    if reminder_due and notify_admin_unfulfilled_requests(
+        config,
+        [item for item, _entry in active_requests],
+        now,
+    ):
+        for _item, entry in active_requests:
             entry["lastAdminReminderAt"] = now
             entry["updatedAt"] = now
-            changed = True
+        changed = True
     return changed
 
 

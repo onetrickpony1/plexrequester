@@ -78,7 +78,7 @@ class UserDataStorageTests(unittest.TestCase):
 
 
 class AppVersionConfigTests(unittest.TestCase):
-    def payload(self, version="v7.9"):
+    def payload(self, version="v8.0"):
         return {
             "app": {"version": version},
             "qbittorrent": {"url": "http://localhost:8080"},
@@ -153,7 +153,7 @@ class MultiDirectoryDestinationTests(unittest.TestCase):
     def test_admin_config_saves_multiple_paths_and_legacy_first_path(self):
         config = {"notifications": {}}
         payload = {
-            "app": {"version": "v7.9"},
+            "app": {"version": "v8.0"},
             "qbittorrent": {"url": "http://localhost:8080"},
             "plex": {"databasePath": ""},
             "discordUserMappings": [],
@@ -432,29 +432,37 @@ class DiscordRequesterMentionTests(unittest.TestCase):
         config = self.config()
         config["notifications"]["adminReminderWebhookUrl"] = "https://discord.com/api/webhooks/123/token"
         with mock.patch.object(server.request, "urlopen", return_value=response) as urlopen:
-            result = server.notify_admin_unfulfilled_request(
+            result = server.notify_admin_unfulfilled_requests(
                 config,
-                {"requester": "<@987654321098765432>", "customTitle": "Example", "requestedAt": 1},
+                [{"requester": "<@987654321098765432>", "customTitle": "Example", "requestedAt": 1}],
                 now=3601,
             )
         payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
         self.assertTrue(result)
         self.assertEqual(payload["allowed_mentions"], {"parse": []})
+        self.assertEqual(payload["embeds"][0]["title"], "Unfulfilled Plex Requests")
+        self.assertIn("<@987654321098765432>", payload["embeds"][0]["fields"][0]["value"])
         self.assertEqual(urlopen.call_args.args[0].full_url, config["notifications"]["adminReminderWebhookUrl"])
 
-    def test_due_reminders_send_each_request_individually_and_skip_muted(self):
+    def test_waiting_time_uses_days_after_twenty_four_hours(self):
+        item = {"requestedAt": 1}
+        self.assertEqual(server.discord_waiting_time(item, now=3601), "1h")
+        self.assertEqual(server.discord_waiting_time(item, now=165661), "1d 22h 1m")
+
+    def test_due_reminders_send_one_summary_of_all_open_unmuted_requests(self):
         config = self.config()
         config["notifications"]["adminReminderWebhookUrl"] = "https://discord.com/api/webhooks/123/token"
         items = [
             {"id": "one", "requestedAt": 1, "customTitle": "One", "reminderMuted": False},
-            {"id": "two", "requestedAt": 1, "customTitle": "Two", "reminderMuted": False},
+            {"id": "two", "requestedAt": 3500, "customTitle": "Two", "reminderMuted": False},
             {"id": "muted", "requestedAt": 1, "customTitle": "Muted", "reminderMuted": True},
         ]
         history = {}
-        with mock.patch.object(server, "notify_admin_unfulfilled_request", return_value=True) as notify:
+        with mock.patch.object(server, "notify_admin_unfulfilled_requests", return_value=True) as notify:
             changed = server.send_due_admin_reminders(config, items, history, now=3601)
         self.assertTrue(changed)
-        self.assertEqual([call.args[1]["id"] for call in notify.call_args_list], ["one", "two"])
+        notify.assert_called_once()
+        self.assertEqual([item["id"] for item in notify.call_args.args[1]], ["one", "two"])
         self.assertEqual(history["one"]["lastAdminReminderAt"], 3601)
         self.assertEqual(history["two"]["lastAdminReminderAt"], 3601)
         self.assertNotIn("muted", history)
@@ -464,7 +472,7 @@ class DiscordRequesterMentionTests(unittest.TestCase):
         config["notifications"]["adminReminderWebhookUrl"] = "https://discord.com/api/webhooks/123/token"
         item = {"id": "one", "requestedAt": 100, "customTitle": "One"}
         history = {"one": {"lastState": "open", "lastAdminReminderAt": 3700}}
-        with mock.patch.object(server, "notify_admin_unfulfilled_request") as notify:
+        with mock.patch.object(server, "notify_admin_unfulfilled_requests") as notify:
             self.assertFalse(server.send_due_admin_reminders(config, [item], history, now=7299))
             notify.assert_not_called()
 
@@ -479,7 +487,7 @@ class DiscordRequesterMentionTests(unittest.TestCase):
         })
         item = {"id": "one", "requestedAt": 100, "customTitle": "One"}
         history = {"one": {"lastState": "open"}}
-        with mock.patch.object(server, "notify_admin_unfulfilled_request", return_value=True) as notify:
+        with mock.patch.object(server, "notify_admin_unfulfilled_requests", return_value=True) as notify:
             self.assertTrue(server.send_due_admin_reminders(config, [item], history, now=1900))
             notify.assert_called_once()
             notify.reset_mock()

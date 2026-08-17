@@ -978,7 +978,7 @@ function requestCard(item) {
       <strong>${escapeHtml(title)}${year}</strong>
       <small>${escapeHtml(item.requester || "Unknown")} &middot; ${formatRequestTime(item.requestedAt)} &middot; ${escapeHtml(quality)}</small>
       ${fulfillment ? `<small class="request-status ${escapeHtml(fulfillment.state)}">${escapeHtml(fulfillment.message)}</small>` : ""}
-      ${item.reminderMuted && isAdmin() ? `<small class="request-reminder-muted">Hourly admin reminder muted</small>` : ""}
+      ${item.reminderMuted && isAdmin() ? `<small class="request-reminder-muted">Admin reminders muted</small>` : ""}
       ${item.libraryWarning ? `<small class="request-warning">${escapeHtml(item.libraryWarning)}</small>` : ""}
       ${tmdb.overview ? `<small>${escapeHtml(tmdb.overview).slice(0, 180)}${tmdb.overview.length > 180 ? "..." : ""}</small>` : ""}
     </div>
@@ -1076,7 +1076,7 @@ async function loadAdminConfig() {
 }
 
 function renderConfig(config) {
-  configAppVersion.value = config.app?.version || "v7.9";
+  configAppVersion.value = config.app?.version || "v8.0";
   configQbitUrl.value = config.qbittorrent?.url || "";
   configPlexPath.value = config.plex?.databasePath || "";
   configDiscordWebhook.value = config.discordWebhookUrl || "";
