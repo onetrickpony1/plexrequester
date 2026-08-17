@@ -71,9 +71,11 @@ Admins can add downloads using either magnet links or `.torrent` files.
 - Requests can be TMDb-backed or free-form and can specify quality.
 - Avoid slow page refreshes caused by synchronous Plex scans. Serve cached request/fulfillment state quickly and perform expensive reconciliation in the background.
 - The visible request list should refresh promptly; current behavior targets a five-second refresh interval.
+- Do not mark a detected Plex item fulfilled or send its Discord fulfillment notification until Plex has populated bitrate, resolution, and video-codec metadata for every discovered media item. Include movie Mbps or average TV-episode Mbps in the completed analysis, and poll promptly without blocking page refreshes.
 - When a TV result such as `American Vandal (2017)` is selected with season 2, scan the configured TV shows destination for the presumed parent folder.
 - Precheck **Add subfolder** and fill it with the exact show parent name whether that parent already exists or needs to be created. If it exists, write into that same parent folder.
 - Keep the user in control: they can edit the suggested folder name or uncheck the option.
+- Movie and TV destinations can contain multiple base paths while retaining the legacy single `path`. When multiple paths exist, show an admin download-directory selector and default to the fullest drive below 90% usage; after it reaches 90%, use the next fullest eligible drive. Validate the selected configured-path index on the server.
 - The actual download/request name can remain season-specific; the suggested parent folder is show-specific.
 - Handle name collisions safely. Do not silently overwrite an existing media folder or file.
 
@@ -82,6 +84,7 @@ Admins can add downloads using either magnet links or `.torrent` files.
 - Discord can notify when a request is created and when that request is fulfilled.
 - If a requester is mapped to a Discord user, mention that same user for both events.
 - Do not allow arbitrary user-provided mention syntax. Only mention IDs from the administrator-controlled mapping.
+- A separate administrator-configured webhook can receive one message per unfulfilled request after a configurable delay and at that same repeat interval thereafter. The web Config tab exposes the interval in minutes, defaulting to 60 for older configurations. Administrators can mute or unmute reminders per request from the Requests tab; these controls must remain admin-only and reminder messages must not parse mentions.
 
 ## Runtime data and secrets
 

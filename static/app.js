@@ -14,6 +14,8 @@ const addFolderButton = document.querySelector("#addFolderButton");
 const folderSelect = document.querySelector("#folderSelect");
 const folderLevels = document.querySelector("#folderLevels");
 const folderSelectNote = document.querySelector("#folderSelectNote");
+const destinationDirectoryField = document.querySelector("#destinationDirectoryField");
+const destinationDirectory = document.querySelector("#destinationDirectory");
 const loginPanel = document.querySelector("#loginPanel");
 const siteContent = document.querySelector("#siteContent");
 const loginPin = document.querySelector("#loginPin");
@@ -57,6 +59,8 @@ const configForm = document.querySelector("#configForm");
 const configAppVersion = document.querySelector("#configAppVersion");
 const configQbitUrl = document.querySelector("#configQbitUrl");
 const configPlexPath = document.querySelector("#configPlexPath");
+const configAdminReminderWebhook = document.querySelector("#configAdminReminderWebhook");
+const configAdminReminderInterval = document.querySelector("#configAdminReminderInterval");
 const configDestinations = document.querySelector("#configDestinations");
 const addDestinationButton = document.querySelector("#addDestinationButton");
 const configDiscordMappings = document.querySelector("#configDiscordMappings");
@@ -201,6 +205,31 @@ function selectedDestination() {
   return destinationConfig.find((destination) => destination.id === checked.value) || null;
 }
 
+function syncDirectorySelect() {
+  const destination = selectedDestination();
+  const directories = destination?.directories || [];
+  destinationDirectory.innerHTML = "";
+  directories.forEach((directory) => {
+    const usage = directory.usagePercent == null ? "usage unavailable" : `${directory.usagePercent}% full`;
+    const option = new Option(`${directory.label} — ${usage}`, String(directory.index));
+    option.selected = Boolean(directory.default);
+    destinationDirectory.append(option);
+  });
+  destinationDirectoryField.hidden = directories.length <= 1;
+}
+
+function selectedDestinationPathIndex() {
+  const destination = selectedDestination();
+  const directories = destination?.directories || [];
+  if (directories.length === 0) return "";
+  return destinationDirectory.value || String((directories.find((item) => item.default) || directories[0]).index);
+}
+
+async function syncDestinationControls() {
+  syncDirectorySelect();
+  return syncFolderSelect();
+}
+
 async function syncFolderSelect() {
   const selected = selectedDestination();
   const showSelect = Boolean(selected && selected.browseSubfolders);
@@ -288,6 +317,7 @@ async function loadSubfolders(destinationId, parentPath) {
   const params = new URLSearchParams({
     destinationId,
     parent: parentPath.join("/"),
+    pathIndex: selectedDestinationPathIndex(),
   });
   const response = await fetch(`/api/subfolders?${params}`);
   if (!response.ok) return [];
@@ -347,10 +377,10 @@ function renderDestinations(destinations) {
   });
 
   destinationsEl.querySelectorAll("[name='destinationId']").forEach((input) => {
-    input.addEventListener("change", syncFolderSelect);
+    input.addEventListener("change", syncDestinationControls);
   });
 
-  syncFolderSelect();
+  syncDestinationControls();
 }
 
 async function loadConfig() {
@@ -944,11 +974,13 @@ function requestCard(item) {
       <strong>${escapeHtml(title)}${year}</strong>
       <small>${escapeHtml(item.requester || "Unknown")} &middot; ${formatRequestTime(item.requestedAt)} &middot; ${escapeHtml(quality)}</small>
       ${fulfillment ? `<small class="request-status ${escapeHtml(fulfillment.state)}">${escapeHtml(fulfillment.message)}</small>` : ""}
+      ${item.reminderMuted && isAdmin() ? `<small class="request-reminder-muted">Hourly admin reminder muted</small>` : ""}
       ${item.libraryWarning ? `<small class="request-warning">${escapeHtml(item.libraryWarning)}</small>` : ""}
       ${tmdb.overview ? `<small>${escapeHtml(tmdb.overview).slice(0, 180)}${tmdb.overview.length > 180 ? "..." : ""}</small>` : ""}
     </div>
     <div class="request-actions">
       ${isAdmin() && (!fulfillment || fulfillment.state !== "fulfilled") ? `<button class="icon-button request-fulfill" type="button">Fulfilled</button>` : ""}
+      ${isAdmin() ? `<button class="icon-button request-reminder-mute" type="button">${item.reminderMuted ? "Unmute reminder" : "Mute reminder"}</button>` : ""}
       <button class="icon-button request-delete" type="button" aria-label="Delete request">Delete</button>
     </div>
   `;
@@ -959,6 +991,10 @@ function requestCard(item) {
   const fulfillButton = card.querySelector(".request-fulfill");
   if (fulfillButton) {
     fulfillButton.addEventListener("click", () => markRequestFulfilled(item.id));
+  }
+  const reminderMuteButton = card.querySelector(".request-reminder-mute");
+  if (reminderMuteButton) {
+    reminderMuteButton.addEventListener("click", () => setRequestReminderMuted(item.id, !item.reminderMuted));
   }
   return card;
 }
@@ -974,6 +1010,24 @@ async function markRequestFulfilled(id) {
     const result = await response.json();
     if (!response.ok || result.error) {
       throw new Error(result.error || "Update failed.");
+    }
+    renderRequestList(result.items || []);
+  } catch (error) {
+    showRequestMessage(error.message, "error");
+  }
+}
+
+async function setRequestReminderMuted(id, muted) {
+  if (!isAdmin()) return;
+  try {
+    const response = await fetch("/api/requests/reminder-mute", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, muted }),
+    });
+    const result = await response.json();
+    if (!response.ok || result.error) {
+      throw new Error(result.error || "Reminder update failed.");
     }
     renderRequestList(result.items || []);
   } catch (error) {
@@ -1018,9 +1072,11 @@ async function loadAdminConfig() {
 }
 
 function renderConfig(config) {
-  configAppVersion.value = config.app?.version || "v7.2";
+  configAppVersion.value = config.app?.version || "v7.7";
   configQbitUrl.value = config.qbittorrent?.url || "";
   configPlexPath.value = config.plex?.databasePath || "";
+  configAdminReminderWebhook.value = config.adminReminderWebhookUrl || "";
+  configAdminReminderInterval.value = config.adminReminderIntervalMinutes || 60;
   configDestinations.innerHTML = "";
   (config.destinations || []).forEach((destination) => addConfigDestination(destination));
   configDiscordMappings.innerHTML = "";
@@ -1033,15 +1089,35 @@ function addConfigDestination(destination = {}) {
   row.dataset.destinationId = destination.id || "";
   row.innerHTML = `
     <input class="config-destination-label" type="text" placeholder="Label" value="${escapeHtml(destination.label || "")}">
-    <input class="config-destination-path" type="text" placeholder="Path" value="${escapeHtml(destination.path || "")}">
+    <div class="config-destination-paths"></div>
     <label class="check-row compact">
       <input class="config-destination-browse" type="checkbox" ${destination.browseSubfolders ? "checked" : ""}>
       <span>Browse</span>
     </label>
+    <div class="config-destination-actions">
+      <button class="secondary-button config-add-path" type="button">Add directory</button>
+      <button class="icon-button config-remove-destination" type="button">Remove</button>
+    </div>
+  `;
+  const paths = destination.paths?.length ? destination.paths : [destination.path || ""];
+  paths.forEach((path) => addConfigDestinationPath(row, path));
+  row.querySelector(".config-add-path").addEventListener("click", () => addConfigDestinationPath(row));
+  row.querySelector(".config-remove-destination").addEventListener("click", () => row.remove());
+  configDestinations.append(row);
+}
+
+function addConfigDestinationPath(destinationRow, value = "") {
+  const paths = destinationRow.querySelector(".config-destination-paths");
+  const row = document.createElement("div");
+  row.className = "config-destination-path-row";
+  row.innerHTML = `
+    <input class="config-destination-path" type="text" placeholder="Directory path" value="${escapeHtml(value)}">
     <button class="icon-button" type="button">Remove</button>
   `;
-  row.querySelector("button").addEventListener("click", () => row.remove());
-  configDestinations.append(row);
+  row.querySelector("button").addEventListener("click", () => {
+    if (paths.children.length > 1) row.remove();
+  });
+  paths.append(row);
 }
 
 function addDiscordMapping(mapping = {}) {
@@ -1087,10 +1163,12 @@ function collectConfig() {
       databasePath: configPlexPath.value.trim(),
     },
     discordUserMappings: collectDiscordUserMappings(),
+    adminReminderWebhookUrl: configAdminReminderWebhook.value.trim(),
+    adminReminderIntervalMinutes: Number(configAdminReminderInterval.value),
     destinations: Array.from(configDestinations.querySelectorAll(".config-destination")).map((row) => ({
       id: row.dataset.destinationId,
       label: row.querySelector(".config-destination-label").value.trim(),
-      path: row.querySelector(".config-destination-path").value.trim(),
+      paths: Array.from(row.querySelectorAll(".config-destination-path")).map((input) => input.value.trim()).filter(Boolean),
       browseSubfolders: row.querySelector(".config-destination-browse").checked,
     })),
   };
@@ -1599,6 +1677,7 @@ form.addEventListener("submit", async (event) => {
   const payload = {
     magnet,
     destinationId: data.get("destinationId"),
+    destinationPathIndex: selectedDestinationPathIndex(),
     downloadName: data.get("downloadName"),
     useSubfolder: data.get("useSubfolder") === "on",
     existingSubfolderPath: selectedFolderPath(),
@@ -1630,7 +1709,7 @@ form.addEventListener("submit", async (event) => {
     const firstDestination = document.querySelector("[name='destinationId']");
     if (firstDestination) firstDestination.checked = true;
     newFolderList.innerHTML = "";
-    syncFolderSelect();
+    syncDestinationControls();
     syncSubfolderField();
   } catch (error) {
     showMessage(error.message, "error");
@@ -1657,6 +1736,7 @@ torrentFile.addEventListener("change", () => {
 });
 
 useSubfolder.addEventListener("change", syncSubfolderField);
+destinationDirectory.addEventListener("change", syncFolderSelect);
 addFolderButton.addEventListener("click", () => {
   addNewFolderInput();
   syncSubfolderField();

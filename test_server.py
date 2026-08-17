@@ -78,7 +78,7 @@ class UserDataStorageTests(unittest.TestCase):
 
 
 class AppVersionConfigTests(unittest.TestCase):
-    def payload(self, version="v7.2"):
+    def payload(self, version="v7.7"):
         return {
             "app": {"version": version},
             "qbittorrent": {"url": "http://localhost:8080"},
@@ -112,6 +112,65 @@ class AppVersionConfigTests(unittest.TestCase):
     def test_missing_admin_pin_does_not_authenticate_empty_input(self):
         self.assertEqual(server.role_from_pin({}, ""), "")
         self.assertFalse(server.pin_matches({}, ""))
+
+
+class MultiDirectoryDestinationTests(unittest.TestCase):
+    def usage(self, percent):
+        return {"total": 1000, "used": percent * 10, "free": (100 - percent) * 10, "percent": percent}
+
+    def test_old_single_path_destination_remains_supported(self):
+        destination = {"id": "movies", "path": "G:/Movies"}
+        self.assertEqual(server.destination_paths(destination), ["G:/Movies"])
+        self.assertEqual(server.destination_base_path(destination, 0), "G:/Movies")
+
+    def test_fullest_directory_below_ninety_percent_is_default(self):
+        destination = {"paths": ["G:/Movies", "F:/Movies", "H:/Movies"]}
+        usages = [self.usage(89), self.usage(70), self.usage(95)]
+        with mock.patch.object(server, "disk_usage_for_path", side_effect=usages):
+            choices = server.destination_directory_choices(destination)
+        self.assertEqual(next(choice["index"] for choice in choices if choice["default"]), 0)
+
+    def test_next_fullest_directory_is_used_after_ninety_percent(self):
+        destination = {"paths": ["G:/Movies", "F:/Movies", "H:/Movies"]}
+        usages = [self.usage(91), self.usage(70), self.usage(95)]
+        with mock.patch.object(server, "disk_usage_for_path", side_effect=usages):
+            choices = server.destination_directory_choices(destination)
+        self.assertEqual(next(choice["index"] for choice in choices if choice["default"]), 1)
+
+    def test_least_full_directory_is_safe_fallback_when_all_are_over_threshold(self):
+        destination = {"paths": ["G:/Movies", "F:/Movies", "H:/Movies"]}
+        usages = [self.usage(91), self.usage(96), self.usage(94)]
+        with mock.patch.object(server, "disk_usage_for_path", side_effect=usages):
+            choices = server.destination_directory_choices(destination)
+        self.assertEqual(next(choice["index"] for choice in choices if choice["default"]), 0)
+
+    def test_selected_directory_index_is_validated(self):
+        destination = {"paths": ["G:/Movies", "F:/Movies"]}
+        self.assertEqual(server.destination_base_path(destination, "1"), "F:/Movies")
+        with self.assertRaisesRegex(ValueError, "configured destination directories"):
+            server.destination_base_path(destination, "2")
+
+    def test_admin_config_saves_multiple_paths_and_legacy_first_path(self):
+        config = {"notifications": {}}
+        payload = {
+            "app": {"version": "v7.7"},
+            "qbittorrent": {"url": "http://localhost:8080"},
+            "plex": {"databasePath": ""},
+            "discordUserMappings": [],
+            "destinations": [{
+                "id": "movies",
+                "label": "Movies",
+                "paths": ["G:/Movies", "F:/Movies"],
+            }],
+        }
+        server.apply_editable_config(config, payload)
+        self.assertEqual(config["destinations"][0]["paths"], ["G:/Movies", "F:/Movies"])
+        self.assertEqual(config["destinations"][0]["path"], "G:/Movies")
+
+    def test_editable_config_supplies_paths_for_old_config(self):
+        config = {"destinations": [{"id": "tv", "label": "TV", "path": "F:/TV"}]}
+        editable = server.editable_config(config)
+        self.assertEqual(editable["destinations"][0]["paths"], ["F:/TV"])
 
 
 class TorrentUploadTests(unittest.TestCase):
@@ -322,6 +381,107 @@ class DiscordRequesterMentionTests(unittest.TestCase):
         self.assertEqual(server.discord_user_id_for_requester(config, "Matthew"), "")
         self.assertEqual(server.editable_config(config)["discordUserMappings"], [])
 
+    def test_older_admin_payload_preserves_reminder_webhook(self):
+        config = self.config()
+        config["notifications"]["adminReminderWebhookUrl"] = "https://discord.com/api/webhooks/123/token"
+        server.apply_editable_config(config, self.editable_payload([]))
+        self.assertEqual(
+            config["notifications"]["adminReminderWebhookUrl"],
+            "https://discord.com/api/webhooks/123/token",
+        )
+
+    def test_invalid_reminder_webhook_is_rejected(self):
+        config = self.config()
+        payload = self.editable_payload([])
+        payload["adminReminderWebhookUrl"] = "https://example.com/not-discord"
+        with self.assertRaisesRegex(ValueError, "valid HTTPS Discord webhook"):
+            server.apply_editable_config(config, payload)
+
+    def test_admin_reminder_webhook_disables_mentions(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b""
+        config = self.config()
+        config["notifications"]["adminReminderWebhookUrl"] = "https://discord.com/api/webhooks/123/token"
+        with mock.patch.object(server.request, "urlopen", return_value=response) as urlopen:
+            result = server.notify_admin_unfulfilled_request(
+                config,
+                {"requester": "<@987654321098765432>", "customTitle": "Example", "requestedAt": 1},
+                now=3601,
+            )
+        payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
+        self.assertTrue(result)
+        self.assertEqual(payload["allowed_mentions"], {"parse": []})
+        self.assertEqual(urlopen.call_args.args[0].full_url, config["notifications"]["adminReminderWebhookUrl"])
+
+    def test_due_reminders_send_each_request_individually_and_skip_muted(self):
+        config = self.config()
+        config["notifications"]["adminReminderWebhookUrl"] = "https://discord.com/api/webhooks/123/token"
+        items = [
+            {"id": "one", "requestedAt": 1, "customTitle": "One", "reminderMuted": False},
+            {"id": "two", "requestedAt": 1, "customTitle": "Two", "reminderMuted": False},
+            {"id": "muted", "requestedAt": 1, "customTitle": "Muted", "reminderMuted": True},
+        ]
+        history = {}
+        with mock.patch.object(server, "notify_admin_unfulfilled_request", return_value=True) as notify:
+            changed = server.send_due_admin_reminders(config, items, history, now=3601)
+        self.assertTrue(changed)
+        self.assertEqual([call.args[1]["id"] for call in notify.call_args_list], ["one", "two"])
+        self.assertEqual(history["one"]["lastAdminReminderAt"], 3601)
+        self.assertEqual(history["two"]["lastAdminReminderAt"], 3601)
+        self.assertNotIn("muted", history)
+
+    def test_reminder_waits_one_hour_and_is_throttled_for_another_hour(self):
+        config = self.config()
+        config["notifications"]["adminReminderWebhookUrl"] = "https://discord.com/api/webhooks/123/token"
+        item = {"id": "one", "requestedAt": 100, "customTitle": "One"}
+        history = {"one": {"lastState": "open", "lastAdminReminderAt": 3700}}
+        with mock.patch.object(server, "notify_admin_unfulfilled_request") as notify:
+            self.assertFalse(server.send_due_admin_reminders(config, [item], history, now=7299))
+            notify.assert_not_called()
+
+    def test_reminder_interval_defaults_to_sixty_minutes_for_old_config(self):
+        self.assertEqual(server.admin_reminder_interval_minutes({"notifications": {}}), 60)
+
+    def test_configured_reminder_interval_controls_first_and_repeat_delay(self):
+        config = self.config()
+        config["notifications"].update({
+            "adminReminderWebhookUrl": "https://discord.com/api/webhooks/123/token",
+            "adminReminderIntervalMinutes": 30,
+        })
+        item = {"id": "one", "requestedAt": 100, "customTitle": "One"}
+        history = {"one": {"lastState": "open"}}
+        with mock.patch.object(server, "notify_admin_unfulfilled_request", return_value=True) as notify:
+            self.assertTrue(server.send_due_admin_reminders(config, [item], history, now=1900))
+            notify.assert_called_once()
+            notify.reset_mock()
+            self.assertFalse(server.send_due_admin_reminders(config, [item], history, now=3699))
+            notify.assert_not_called()
+
+    def test_admin_config_saves_reminder_interval(self):
+        config = self.config()
+        payload = self.editable_payload([])
+        payload["adminReminderIntervalMinutes"] = 45
+        server.apply_editable_config(config, payload)
+        self.assertEqual(config["notifications"]["adminReminderIntervalMinutes"], 45)
+        self.assertEqual(server.editable_config(config)["adminReminderIntervalMinutes"], 45)
+
+    def test_invalid_admin_reminder_interval_is_rejected(self):
+        config = self.config()
+        payload = self.editable_payload([])
+        payload["adminReminderIntervalMinutes"] = 0
+        with self.assertRaisesRegex(ValueError, "between 1 and 10080"):
+            server.apply_editable_config(config, payload)
+
+    def test_muting_request_is_persisted(self):
+        items = [{"id": "one", "customTitle": "One"}]
+        with (
+            mock.patch.object(server, "load_requests", return_value=items),
+            mock.patch.object(server, "save_requests") as save_requests,
+        ):
+            self.assertTrue(server.set_request_reminder_muted("one", True))
+        self.assertTrue(items[0]["reminderMuted"])
+        save_requests.assert_called_once_with(items)
+
     def test_mapped_fulfillment_notification_mentions_same_requester(self):
         response = mock.MagicMock()
         response.__enter__.return_value.read.return_value = b""
@@ -358,6 +518,13 @@ class DiscordRequesterMentionTests(unittest.TestCase):
         handler.admin_config_save()
         handler.read_json_body.assert_not_called()
 
+    def test_reminder_mute_stops_before_reading_body_when_unauthorized(self):
+        handler = object.__new__(server.AppHandler)
+        handler.require_admin = mock.Mock(return_value=False)
+        handler.read_json_body = mock.Mock()
+        handler.set_request_reminder_mute()
+        handler.read_json_body.assert_not_called()
+
 
 class PublicLibraryAccessTests(unittest.TestCase):
     def handler_for_path(self, path):
@@ -385,6 +552,74 @@ class PublicLibraryAccessTests(unittest.TestCase):
 
 
 class RequestRefreshPerformanceTests(unittest.TestCase):
+    def test_detected_item_waits_until_plex_analysis_is_complete(self):
+        item = {
+            "quality": "1080p",
+            "tmdb": {"id": 1, "type": "movie", "title": "Example", "year": "2026"},
+        }
+        analysis = {
+            "match": {"id": 10, "type": "movie", "title": "Example", "year": "2026"},
+            "qualities": set(),
+            "summary": "",
+            "analyzed": False,
+        }
+        with mock.patch.object(server, "plex_analysis_for_tmdb", return_value=analysis):
+            result = server.current_request_plex_status({}, item)
+        self.assertEqual(result["state"], "open")
+        self.assertIn("waiting for Plex media analysis", result["message"])
+
+    def test_analyzed_item_is_fulfilled_with_mbps_details(self):
+        item = {
+            "quality": "1080p",
+            "tmdb": {"id": 1, "type": "movie", "title": "Example", "year": "2026"},
+        }
+        analysis = {
+            "match": {"id": 10, "type": "movie", "title": "Example", "year": "2026"},
+            "qualities": {"1080p"},
+            "summary": "1080p - 12.5 Mbps - H264",
+            "analyzed": True,
+        }
+        with mock.patch.object(server, "plex_analysis_for_tmdb", return_value=analysis):
+            result = server.current_request_plex_status({}, item)
+        self.assertEqual(result["state"], "fulfilled")
+        self.assertEqual(result["message"], "Fulfilled: 1080p - 12.5 Mbps - H264.")
+
+    def test_media_analysis_requires_bitrate_resolution_and_codec(self):
+        complete = {"id": 1, "bitrate": 12500, "width": 1920, "height": 1080, "video_codec": "h264"}
+        self.assertTrue(server.media_analysis_complete([complete], []))
+        for missing in ("bitrate", "width", "height", "video_codec"):
+            incomplete = dict(complete)
+            incomplete.pop(missing)
+            if missing in {"width", "height"}:
+                incomplete.pop("width" if missing == "height" else "height", None)
+            self.assertFalse(server.media_analysis_complete([incomplete], []))
+
+    def test_movie_summary_reports_mbps(self):
+        media = [{"id": 1, "bitrate": 12500, "width": 1920, "height": 1080, "video_codec": "h264"}]
+        self.assertEqual(server.media_quality_summary(media, []), "1080p - 12.5 Mbps - H264")
+
+    def test_tv_summary_reports_average_episode_mbps(self):
+        media = [
+            {"id": 1, "metadata_item_id": 101, "bitrate": 8000, "width": 1920, "height": 1080, "video_codec": "h264"},
+            {"id": 2, "metadata_item_id": 102, "bitrate": 12000, "width": 1920, "height": 1080, "video_codec": "h264"},
+        ]
+        self.assertEqual(
+            server.media_quality_summary(media, [], average_bitrate=True),
+            "1080p - 10 Mbps average - H264",
+        )
+
+    def test_tv_average_counts_each_episode_once_when_it_has_multiple_versions(self):
+        media = [
+            {"id": 1, "metadata_item_id": 101, "bitrate": 8000},
+            {"id": 2, "metadata_item_id": 101, "bitrate": 10000},
+            {"id": 3, "metadata_item_id": 102, "bitrate": 12000},
+        ]
+        self.assertEqual(server.average_episode_bitrate(media, []), 11000)
+
+    def test_fulfillment_monitor_defaults_to_fastest_interval(self):
+        with mock.patch.dict(server.os.environ, {}, clear=True):
+            self.assertEqual(server.fulfillment_check_interval(), 15)
+
     def test_request_display_uses_cached_state_without_plex_lookup(self):
         item = {
             "id": "request-1",

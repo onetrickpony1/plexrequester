@@ -2,7 +2,7 @@
 
 Plex Requester is a lightweight, self-hosted web app for collecting movie and TV requests and sending magnet links or `.torrent` files to qBittorrent. It includes TMDb lookup, Plex library checks, request fulfillment tracking, configurable download destinations, Discord notifications, and a qBittorrent monitoring dashboard.
 
-The current default version label is **v7.2**. Administrators can edit the label from the Config tab; it is displayed beside the Plex Requester title for all users and cached locally to prevent a stale-version flash during refresh. Versions increment only when project documents, source code, or documentation are edited.
+The current default version label is **v7.7**. Administrators can edit the label from the Config tab; it is displayed beside the Plex Requester title for all users and cached locally to prevent a stale-version flash during refresh. Versions increment only when project documents, source code, or documentation are edited.
 
 For portable project context, coding preferences, compatibility rules, and a future-release checklist, see [CODEX_HANDOFF.md](CODEX_HANDOFF.md).
 
@@ -16,10 +16,13 @@ The backend uses only the Python standard library. The frontend is plain HTML, C
 - Submit requests for `1080p`, `4K`, or `REMUX`.
 - Submit a free-form request when TMDb has no match.
 - Warn when a requested title already exists in Plex or exists at another quality.
-- Automatically check Plex for fulfilled requests.
+- Automatically check Plex for fulfilled requests and wait for complete bitrate, resolution, and codec analysis before sending the fulfillment notification.
+- Include the analyzed movie bitrate, or average bitrate across a TV show's discovered episodes, in the fulfillment details.
 - Refresh the visible request list every five seconds using cached fulfillment state while Plex reconciliation runs in the background.
 - Mark requests fulfilled manually as an administrator.
 - Send optional Discord notifications for new and fulfilled requests.
+- Send a separate Discord webhook message for each overdue request using an administrator-configurable reminder interval.
+- Let administrators mute or unmute reminders on individual requests.
 - Mention a mapped Discord user when their request is created and fulfilled without enabling arbitrary mentions.
 
 ### Downloads
@@ -28,6 +31,8 @@ The backend uses only the Python standard library. The frontend is plain HTML, C
 - Upload `.torrent` files up to 10 MB.
 - Detect duplicate torrents by info hash.
 - Choose from preset movie, TV, or custom download destinations.
+- Configure multiple directories within a movie or TV destination and choose the exact directory when adding a download.
+- Automatically prefer the fullest configured directory below 90% usage, moving to the next fullest eligible directory as drives fill.
 - Browse existing nested folders for configured destinations.
 - Create multiple new folder levels before adding a download.
 - Generate Plex-friendly names from TMDb, including season names such as `The Office (2005) S01`.
@@ -145,6 +150,8 @@ The default configuration path is `%LOCALAPPDATA%\Plex Requester\config.json`. A
   },
   "notifications": {
     "discordWebhookUrl": "",
+    "adminReminderWebhookUrl": "",
+    "adminReminderIntervalMinutes": 60,
     "discordUserMappings": {
       "Matthew": "123456789012345678"
     }
@@ -154,12 +161,20 @@ The default configuration path is `%LOCALAPPDATA%\Plex Requester\config.json`. A
     {
       "id": "movies",
       "label": "Movies",
-      "path": "D:/Media/Movies"
+      "path": "G:/Media/Movies",
+      "paths": [
+        "G:/Media/Movies",
+        "F:/Media/Movies"
+      ]
     },
     {
       "id": "tv",
       "label": "TV Shows",
-      "path": "D:/Media/TV Shows",
+      "path": "G:/Media/TV Shows",
+      "paths": [
+        "G:/Media/TV Shows",
+        "F:/Media/TV Shows"
+      ],
       "browseSubfolders": true
     }
   ]
@@ -172,7 +187,8 @@ Each destination requires:
 
 - `id`: a unique internal identifier.
 - `label`: the name shown in the Download tab.
-- `path`: the save path passed to qBittorrent.
+- `path`: the legacy/fallback save path passed to older Plex Requester versions. v7.5 and later keep this equal to the first item in `paths`.
+- `paths`: optional list of one or more directories for this media type. Older configurations containing only `path` remain valid.
 - `browseSubfolders`: optional; when `true`, existing child folders can be selected from the page.
 
 For Windows paths, use forward slashes:
@@ -188,6 +204,8 @@ or escape every backslash:
 ```
 
 The web Config tab lets an administrator change the qBittorrent URL, Plex database path, and destinations. Credentials, API keys, the Discord webhook, and the admin PIN should be managed in `config.json`, with environment variables, or through the Windows launcher where supported.
+
+When a destination contains multiple paths, the Download tab shows a compact directory selector. Its default is the directory with the highest drive usage below 90%. Once that drive reaches 90%, the next fullest directory below 90% becomes the default. If every drive is at least 90% full, the least-full available drive is selected as a safe fallback. The chosen index is validated against the configured list by the server; arbitrary paths are not accepted from the browser.
 
 ## Environment variables
 
@@ -205,8 +223,10 @@ Configuration can be overridden without editing `config.json`:
 | `PLEX_DATABASE_PATH` | Plex SQLite database path | Value from config |
 | `TMDB_API_KEY` | TMDb API key or read token | Value from config |
 | `DISCORD_WEBHOOK_URL` | Discord webhook | Value from config |
+| `DISCORD_ADMIN_REMINDER_WEBHOOK_URL` | Separate webhook for unfulfilled-request reminders | Value from config |
+| `ADMIN_REMINDER_INTERVAL_MINUTES` | First reminder delay and repeat interval | `60`, minimum `1`, maximum `10080` |
 | `ADMIN_PIN` | Administrator PIN | Value from config |
-| `FULFILLMENT_CHECK_SECONDS` | Plex fulfillment interval | `60`, minimum `15` |
+| `FULFILLMENT_CHECK_SECONDS` | Plex fulfillment interval | `15`, minimum `15` |
 
 Example:
 
@@ -235,6 +255,7 @@ Administrators can additionally:
 - Add magnet links and torrent files.
 - Start or pause the qBittorrent session.
 - Mark requests fulfilled or delete them from the interface.
+- Mute or unmute Discord reminders for individual requests.
 - Edit supported configuration values.
 
 Admin sessions are stored in an HTTP-only cookie and expire after seven days. Use the Login button to enter the configured PIN.
@@ -260,11 +281,13 @@ Plex Requester does not write to this database. For each operation, it:
 3. Queries the snapshot.
 4. Deletes the snapshot.
 
-The fulfillment monitor checks pending TMDb-backed requests after startup and then at the configured interval.
+The fulfillment monitor checks pending TMDb-backed requests after startup and then every 15 seconds by default. A title remains pending after first appearing in Plex until every discovered media item has bitrate, resolution, and video-codec metadata. Once analysis is complete, fulfillment details include the movie bitrate or, for TV, the average bitrate across the discovered episodes.
 
 ## Discord notifications
 
 Set `notifications.discordWebhookUrl` or `DISCORD_WEBHOOK_URL` to enable notifications.
+
+Set `notifications.adminReminderWebhookUrl`, use the administrator Config tab, or set `DISCORD_ADMIN_REMINDER_WEBHOOK_URL` to send reminders to a separate Discord channel. The Config tab's **Request reminder interval (minutes)** setting controls both the first reminder delay and subsequent repeats; it defaults to 60 minutes and accepts 1 through 10080 minutes. Each overdue request is messaged separately. Administrators can mute or unmute an individual request from the Requests tab. Reminder messages disable Discord mention parsing.
 
 Notifications can include:
 

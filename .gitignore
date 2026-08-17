@@ -45,3 +45,6 @@ Desktop.ini
 *.tmp
 *.bak
 *~
+
+# Local release instructions
+GITHUB_RELEASE_GUIDE.md

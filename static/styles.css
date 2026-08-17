@@ -638,8 +638,18 @@ body:not([data-role="admin"]) .request-fulfill {
   display: none !important;
 }
 
+body:not([data-role="admin"]) .request-reminder-mute {
+  display: none !important;
+}
+
+.request-reminder-muted {
+  color: var(--accent) !important;
+  font-weight: 800;
+}
+
 .request-delete,
-.request-fulfill {
+.request-fulfill,
+.request-reminder-mute {
   min-width: 78px;
 }
 
@@ -1016,6 +1026,27 @@ button:disabled {
   background: var(--field);
 }
 
+.config-destination-paths,
+.config-destination-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.config-destination-path-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.destination-directory-field {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 360px);
+  align-items: center;
+  gap: 10px;
+  width: fit-content;
+  max-width: 100%;
+}
+
 .config-section-header {
   margin-top: 12px;
 }
@@ -1259,6 +1290,11 @@ button:disabled {
   .config-destination,
   .config-discord-mapping {
     display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .destination-directory-field {
+    width: 100%;
     grid-template-columns: 1fr;
   }
 

@@ -1,6 +1,6 @@
 {
   "app": {
-    "version": "v7.2"
+    "version": "v7.7"
   },
   "server": {
     "port": 8003
@@ -18,19 +18,27 @@
   },
   "notifications": {
     "discordUserMappings": {},
-    "discordWebhookUrl": ""
+    "discordWebhookUrl": "",
+    "adminReminderWebhookUrl": "",
+    "adminReminderIntervalMinutes": 60
   },
   "adminPin": "change-this-pin",
   "destinations": [
     {
       "id": "movies",
       "label": "Movies",
-      "path": "D:\\Media\\Movies"
+      "path": "D:\\Media\\Movies",
+      "paths": [
+        "D:\\Media\\Movies"
+      ]
     },
     {
       "id": "tv_shows",
       "label": "TV Shows",
       "path": "D:\\Media\\TV Shows",
+      "paths": [
+        "D:\\Media\\TV Shows"
+      ],
       "browseSubfolders": true
     }
   ]

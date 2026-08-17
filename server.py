@@ -27,8 +27,12 @@ PLEX_ANALYSIS_CACHE_LOCK = threading.RLock()
 PLEX_ANALYSIS_CACHE = {}
 PLEX_ANALYSIS_CACHE_SECONDS = 60
 MAX_TORRENT_FILE_SIZE = 10 * 1024 * 1024
-DEFAULT_APP_VERSION = "v7.2"
+DEFAULT_APP_VERSION = "v7.7"
 DEFAULT_SERVER_PORT = 8003
+DEFAULT_ADMIN_REMINDER_INTERVAL_MINUTES = 60
+MIN_ADMIN_REMINDER_INTERVAL_MINUTES = 1
+MAX_ADMIN_REMINDER_INTERVAL_MINUTES = 7 * 24 * 60
+DESTINATION_FULL_PERCENT = 90
 USER_DATA_FILES = (
     "config.json",
     "requests.json",
@@ -108,6 +112,14 @@ def load_config():
     notifications["discordWebhookUrl"] = os.environ.get(
         "DISCORD_WEBHOOK_URL",
         notifications.get("discordWebhookUrl", ""),
+    )
+    notifications["adminReminderWebhookUrl"] = os.environ.get(
+        "DISCORD_ADMIN_REMINDER_WEBHOOK_URL",
+        notifications.get("adminReminderWebhookUrl", ""),
+    )
+    notifications["adminReminderIntervalMinutes"] = os.environ.get(
+        "ADMIN_REMINDER_INTERVAL_MINUTES",
+        notifications.get("adminReminderIntervalMinutes", DEFAULT_ADMIN_REMINDER_INTERVAL_MINUTES),
     )
     notifications.setdefault("discordUserMappings", {})
     app = config.setdefault("app", {})
@@ -620,6 +632,86 @@ def list_subfolders(base_path, parent_subfolders=None):
     )
 
 
+def destination_paths(destination):
+    raw_paths = destination.get("paths")
+    if not isinstance(raw_paths, list):
+        raw_paths = [destination.get("path", "")]
+    paths = []
+    seen = set()
+    for value in raw_paths:
+        path = str(value or "").strip()
+        normalized = path.rstrip("/\\").casefold()
+        if not path or normalized in seen:
+            continue
+        seen.add(normalized)
+        paths.append(path)
+    legacy_path = str(destination.get("path", "")).strip()
+    if not paths and legacy_path:
+        paths.append(legacy_path)
+    return paths
+
+
+def disk_usage_for_path(path):
+    try:
+        usage = shutil.disk_usage(path)
+    except OSError:
+        anchor = Path(path).anchor
+        if not anchor:
+            return None
+        try:
+            usage = shutil.disk_usage(anchor)
+        except OSError:
+            return None
+    percent = (usage.used / usage.total * 100) if usage.total else 0
+    return {
+        "total": usage.total,
+        "used": usage.used,
+        "free": usage.free,
+        "percent": percent,
+    }
+
+
+def destination_directory_choices(destination):
+    choices = []
+    for index, path in enumerate(destination_paths(destination)):
+        usage = disk_usage_for_path(path)
+        choices.append({
+            "index": index,
+            "label": path,
+            "usagePercent": round(usage["percent"], 1) if usage else None,
+            "eligible": bool(usage and usage["percent"] < DESTINATION_FULL_PERCENT),
+            "default": False,
+        })
+    eligible = [choice for choice in choices if choice["eligible"]]
+    known = [choice for choice in choices if choice["usagePercent"] is not None]
+    if eligible:
+        selected = max(eligible, key=lambda choice: choice["usagePercent"])
+    elif known:
+        selected = min(known, key=lambda choice: choice["usagePercent"])
+    else:
+        selected = choices[0] if choices else None
+    if selected:
+        selected["default"] = True
+    return choices
+
+
+def destination_base_path(destination, path_index=None):
+    paths = destination_paths(destination)
+    if not paths:
+        raise ValueError("The selected destination has no configured directories.")
+    if path_index is None or str(path_index).strip() == "":
+        choices = destination_directory_choices(destination)
+        selected = next((choice for choice in choices if choice["default"]), choices[0])
+        return paths[selected["index"]]
+    try:
+        index = int(path_index)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Choose one of the configured destination directories.") from exc
+    if index < 0 or index >= len(paths):
+        raise ValueError("Choose one of the configured destination directories.")
+    return paths[index]
+
+
 def directory_size(path):
     root = Path(path)
     if not root.exists() or not root.is_dir():
@@ -640,7 +732,7 @@ def storage_summary(config):
     destinations = config.get("destinations", [])
     movie_destination = next((item for item in destinations if "film" in item.get("id", "").lower() or "movie" in item.get("id", "").lower()), None)
     tv_destination = next((item for item in destinations if "tv" in item.get("id", "").lower()), None)
-    disk_path = None
+    disk_roots = set()
 
     rows = []
     for key, destination in (("movies", movie_destination), ("tvShows", tv_destination)):
@@ -648,11 +740,13 @@ def storage_summary(config):
             rows.append({"key": key, "label": "Movies" if key == "movies" else "TV Shows", "bytes": None, "exists": False})
             continue
 
-        path = destination["path"]
-        drive_root = Path(path).anchor
-        if disk_path is None and drive_root:
-            disk_path = drive_root
-        size = directory_size(path)
+        paths = destination_paths(destination)
+        sizes = [directory_size(path) for path in paths]
+        size = sum(value for value in sizes if value is not None) if any(value is not None for value in sizes) else None
+        for path in paths:
+            drive_root = Path(path).anchor
+            if drive_root:
+                disk_roots.add(drive_root.casefold())
         rows.append({
             "key": key,
             "label": destination["label"],
@@ -662,14 +756,18 @@ def storage_summary(config):
 
     free = total = used = None
     disk_error = None
-    if disk_path:
-        try:
-            usage = shutil.disk_usage(disk_path)
-            total = usage.total
-            used = usage.used
-            free = usage.free
-        except OSError as exc:
-            disk_error = str(exc)
+    if disk_roots:
+        errors = []
+        for disk_path in sorted(disk_roots):
+            try:
+                usage = shutil.disk_usage(disk_path)
+                total = (total or 0) + usage.total
+                used = (used or 0) + usage.used
+                free = (free or 0) + usage.free
+            except OSError as exc:
+                errors.append(str(exc))
+        if errors:
+            disk_error = "; ".join(errors)
     else:
         disk_error = "No destination drive is configured."
 
@@ -769,9 +867,25 @@ def video_stream_for_media(item, stream_rows):
     ]
     video_candidates = [
         stream for stream in candidates
-        if str(stream.get("stream_type", "")) in {"1", "video"} or stream.get("codec")
+        if str(stream.get("stream_type", stream.get("stream_type_id", ""))).lower() in {"1", "video"}
     ]
-    return video_candidates[0] if video_candidates else (candidates[0] if candidates else {})
+    return video_candidates[0] if video_candidates else {}
+
+
+def media_analysis_complete(media_items, stream_rows):
+    if not media_items:
+        return False
+
+    for item in media_items:
+        stream = video_stream_for_media(item, stream_rows)
+        codec = stream.get("codec") or item.get("video_codec") or item.get("codec")
+        if not media_bitrate(item, stream_rows):
+            return False
+        if not (media_resolution_height(item) or int_value(item.get("width"))):
+            return False
+        if not codec:
+            return False
+    return True
 
 
 def classify_media_quality(media_items, stream_rows):
@@ -781,7 +895,7 @@ def classify_media_quality(media_items, stream_rows):
         width = int_value(item.get("width"))
         bitrate = media_bitrate(item, stream_rows)
 
-        if bitrate >= 30000000:
+        if bitrate >= 30000:
             qualities.add("REMUX")
         if height >= 2000 or width >= 3800:
             qualities.add("4K")
@@ -794,12 +908,21 @@ def bitrate_label(value):
     bitrate = int_value(value)
     if not bitrate:
         return ""
-    if bitrate >= 1000000:
-        return f"{round(bitrate / 1000000, 1):g} Mbps"
-    return f"{bitrate} kbps"
+    return f"{round(bitrate / 1000, 1):g} Mbps"
 
 
-def media_quality_summary(media_items, stream_rows):
+def average_episode_bitrate(media_items, stream_rows):
+    episode_bitrates = {}
+    for item in media_items:
+        episode_id = str(item.get("metadata_item_id") or item.get("id") or "")
+        bitrate = media_bitrate(item, stream_rows)
+        if episode_id and bitrate:
+            episode_bitrates[episode_id] = max(episode_bitrates.get(episode_id, 0), bitrate)
+    values = list(episode_bitrates.values())
+    return round(sum(values) / len(values)) if values else 0
+
+
+def media_quality_summary(media_items, stream_rows, average_bitrate=False):
     if not media_items:
         return ""
 
@@ -815,10 +938,10 @@ def media_quality_summary(media_items, stream_rows):
     parts = []
     height = media_resolution_height(best)
     width = int_value(best.get("width"))
-    bitrate = media_bitrate(best, stream_rows)
+    bitrate = average_episode_bitrate(media_items, stream_rows) if average_bitrate else media_bitrate(best, stream_rows)
     codec = stream.get("codec") or best.get("video_codec") or best.get("codec")
 
-    if bitrate >= 30000000:
+    if media_bitrate(best, stream_rows) >= 30000:
         parts.append("REMUX")
     elif height >= 2000 or width >= 3800:
         parts.append("4K")
@@ -827,7 +950,7 @@ def media_quality_summary(media_items, stream_rows):
 
     label = bitrate_label(bitrate)
     if label:
-        parts.append(label)
+        parts.append(f"{label} average" if average_bitrate else label)
     if codec:
         parts.append(str(codec).upper())
     return " - ".join(parts)
@@ -947,13 +1070,17 @@ def plex_match_for_tmdb(config, tmdb_item):
 
 def plex_analysis_cache_key(config, tmdb_item):
     database_path = plex_database_path(config)
-    try:
-        database_mtime = database_path.stat().st_mtime_ns if database_path else 0
-    except OSError:
-        database_mtime = 0
+    database_fingerprint = []
+    if database_path:
+        for path in (database_path, Path(f"{database_path}-wal"), Path(f"{database_path}-shm")):
+            try:
+                stat = path.stat()
+                database_fingerprint.append((stat.st_mtime_ns, stat.st_size))
+            except OSError:
+                database_fingerprint.append((0, 0))
     return (
         str(database_path or ""),
-        database_mtime,
+        tuple(database_fingerprint),
         str(tmdb_item.get("type") or ""),
         str(tmdb_item.get("id") or ""),
         normalize_search_text(tmdb_item.get("title") or ""),
@@ -963,7 +1090,7 @@ def plex_analysis_cache_key(config, tmdb_item):
 
 def plex_analysis_for_tmdb(config, tmdb_item):
     if not isinstance(tmdb_item, dict):
-        return {"match": None, "qualities": set(), "summary": ""}
+        return {"match": None, "qualities": set(), "summary": "", "analyzed": False}
     cache_key = plex_analysis_cache_key(config, tmdb_item)
     now = time.monotonic()
     with PLEX_ANALYSIS_CACHE_LOCK:
@@ -974,14 +1101,21 @@ def plex_analysis_for_tmdb(config, tmdb_item):
     match = plex_match_for_tmdb(config, tmdb_item)
     qualities = set()
     summary = ""
+    analyzed = False
     if match:
         try:
             media_items, stream_rows = media_rows_for_library_item(plex_database_path(config), match)
-            qualities = classify_media_quality(media_items, stream_rows)
-            summary = media_quality_summary(media_items, stream_rows)
+            analyzed = media_analysis_complete(media_items, stream_rows)
+            if analyzed:
+                qualities = classify_media_quality(media_items, stream_rows)
+                summary = media_quality_summary(
+                    media_items,
+                    stream_rows,
+                    average_bitrate=match.get("type") == "show",
+                )
         except (OSError, sqlite3.DatabaseError):
             pass
-    analysis = {"match": match, "qualities": qualities, "summary": summary}
+    analysis = {"match": match, "qualities": qualities, "summary": summary, "analyzed": analyzed}
     with PLEX_ANALYSIS_CACHE_LOCK:
         for key, entry in list(PLEX_ANALYSIS_CACHE.items()):
             if now - entry["createdAt"] >= PLEX_ANALYSIS_CACHE_SECONDS:
@@ -1019,6 +1153,12 @@ def current_request_plex_status(config, item):
             "message": "Not in Plex yet.",
         }
 
+    if not analysis.get("analyzed"):
+        return {
+            "state": "open",
+            "message": "In Plex; waiting for Plex media analysis.",
+        }
+
     qualities = analysis["qualities"]
     summary = analysis["summary"]
 
@@ -1033,8 +1173,8 @@ def current_request_plex_status(config, item):
             "message": f"In Plex at different quality: {summary or ', '.join(sorted(qualities))}.",
         }
     return {
-        "state": "fulfilled",
-        "message": "Fulfilled: in Plex, quality not analyzed yet.",
+        "state": "open",
+        "message": "In Plex; waiting for complete quality details.",
     }
 
 
@@ -1214,6 +1354,8 @@ def requests_with_fulfillment(config):
                 continue
         enriched.append(copy)
 
+    history_changed = send_due_admin_reminders(config, source_items, history) or history_changed
+
     with REQUEST_LOCK:
         if history_changed:
             try:
@@ -1263,6 +1405,7 @@ def request_item(config, payload, client_address):
         "quality": quality,
         "customTitle": custom_title,
         "libraryWarning": "",
+        "reminderMuted": False,
         "tmdb": None,
     }
     if isinstance(tmdb_item, dict):
@@ -1317,6 +1460,28 @@ def discord_webhook_url(config):
     return str(config.get("notifications", {}).get("discordWebhookUrl", "")).strip()
 
 
+def admin_reminder_webhook_url(config):
+    return str(config.get("notifications", {}).get("adminReminderWebhookUrl", "")).strip()
+
+
+def admin_reminder_interval_minutes(config):
+    value = config.get("notifications", {}).get(
+        "adminReminderIntervalMinutes",
+        DEFAULT_ADMIN_REMINDER_INTERVAL_MINUTES,
+    )
+    try:
+        minutes = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_ADMIN_REMINDER_INTERVAL_MINUTES
+    if not MIN_ADMIN_REMINDER_INTERVAL_MINUTES <= minutes <= MAX_ADMIN_REMINDER_INTERVAL_MINUTES:
+        return DEFAULT_ADMIN_REMINDER_INTERVAL_MINUTES
+    return minutes
+
+
+def admin_reminder_interval_seconds(config):
+    return admin_reminder_interval_minutes(config) * 60
+
+
 def normalize_requester_name(value):
     return str(value or "").strip().casefold()
 
@@ -1328,6 +1493,17 @@ def validate_discord_user_id(value):
     if int(discord_id) > 18446744073709551615:
         raise ValueError("Discord user ID is outside the valid snowflake range.")
     return discord_id
+
+
+def validate_discord_webhook_url(value):
+    url = str(value or "").strip()
+    if not url:
+        return ""
+    parsed = parse.urlparse(url)
+    allowed_hosts = {"discord.com", "discordapp.com", "canary.discord.com", "ptb.discord.com"}
+    if parsed.scheme != "https" or parsed.hostname not in allowed_hosts or "/api/webhooks/" not in parsed.path:
+        raise ValueError("Admin reminder webhook must be a valid HTTPS Discord webhook URL.")
+    return url
 
 
 def clean_discord_user_mappings(value):
@@ -1419,7 +1595,9 @@ def discord_fulfillment_message(item, fulfillment, discord_user_id=""):
         detail = detail[len("Fulfilled:"):].strip()
     detail = detail.rstrip(".")
     quality_line = quality
-    if detail and detail.lower() != quality.lower():
+    if detail.lower() == quality.lower() or detail.lower().startswith(f"{quality.lower()} -"):
+        quality_line = detail
+    elif detail:
         quality_line = f"{quality} - {detail}"
     if not quality_line.endswith("."):
         quality_line += "."
@@ -1433,15 +1611,34 @@ def discord_fulfillment_message(item, fulfillment, discord_user_id=""):
     return "\n".join(lines)
 
 
-def send_discord_message(config, content, allowed_user_id=""):
-    url = discord_webhook_url(config)
+def discord_admin_reminder_message(item, now=None):
+    now = int(time.time()) if now is None else int(now)
+    requested_at = int_value(item.get("requestedAt"))
+    age_seconds = max(0, now - requested_at) if requested_at else 0
+    age_minutes = max(1, age_seconds // 60)
+    if age_minutes >= 60:
+        hours, minutes = divmod(age_minutes, 60)
+        waiting = f"{hours}h {minutes}m" if minutes else f"{hours}h"
+    else:
+        waiting = f"{age_minutes}m"
+    return "\n".join([
+        "Unfulfilled Plex request reminder",
+        f"Title: {request_display_title(item)}",
+        f"Requester: {item.get('requester') or 'Unknown'}",
+        f"Requested quality: {item.get('quality') or '1080p'}",
+        f"Waiting: {waiting}",
+    ])
+
+
+def send_discord_webhook(url, content, allowed_user_id=""):
+    url = str(url or "").strip()
     if not url:
         return False
     allowed_mentions = {"parse": []}
     if allowed_user_id:
         allowed_mentions["users"] = [validate_discord_user_id(allowed_user_id)]
     payload = {
-        "content": content,
+        "content": str(content)[:2000],
         "allowed_mentions": allowed_mentions,
     }
     req = request.Request(
@@ -1456,6 +1653,10 @@ def send_discord_message(config, content, allowed_user_id=""):
     with request.urlopen(req, timeout=10) as response:
         response.read()
     return True
+
+
+def send_discord_message(config, content, allowed_user_id=""):
+    return send_discord_webhook(discord_webhook_url(config), content, allowed_user_id)
 
 
 def notify_request_created(config, item):
@@ -1483,12 +1684,62 @@ def notify_request_fulfilled(config, item, fulfillment):
         return False
 
 
+def notify_admin_unfulfilled_request(config, item, now=None):
+    url = admin_reminder_webhook_url(config)
+    if not url:
+        return False
+    try:
+        return send_discord_webhook(url, discord_admin_reminder_message(item, now))
+    except Exception as exc:
+        print(f"Could not send Discord admin reminder: {exc}", flush=True)
+        return False
+
+
+def send_due_admin_reminders(config, items, history, now=None):
+    if not admin_reminder_webhook_url(config):
+        return False
+    now = int(time.time()) if now is None else int(now)
+    reminder_interval = admin_reminder_interval_seconds(config)
+    changed = False
+    for item in items:
+        if bool(item.get("reminderMuted")):
+            continue
+        request_id = str(item.get("id") or "")
+        if not request_id:
+            continue
+        entry = history.get(request_id)
+        if not isinstance(entry, dict):
+            entry = {
+                "lastState": "open",
+                "lastMessage": "Not in Plex yet.",
+                "firstSeenAt": int_value(item.get("requestedAt")) or now,
+                "updatedAt": now,
+            }
+            history[request_id] = entry
+            changed = True
+        if entry.get("manualFulfilledAt") or entry.get("fulfilledAt"):
+            continue
+        if str(entry.get("lastState") or "") in {"fulfilled", "present"}:
+            continue
+        requested_at = int_value(item.get("requestedAt")) or int_value(entry.get("firstSeenAt")) or now
+        last_reminder_at = int_value(entry.get("lastAdminReminderAt"))
+        if now - requested_at < reminder_interval:
+            continue
+        if last_reminder_at and now - last_reminder_at < reminder_interval:
+            continue
+        if notify_admin_unfulfilled_request(config, item, now):
+            entry["lastAdminReminderAt"] = now
+            entry["updatedAt"] = now
+            changed = True
+    return changed
+
+
 def fulfillment_check_interval():
-    raw = os.environ.get("FULFILLMENT_CHECK_SECONDS", "60")
+    raw = os.environ.get("FULFILLMENT_CHECK_SECONDS", "15")
     try:
         value = int(raw)
     except ValueError:
-        value = 60
+        value = 15
     return max(15, value)
 
 
@@ -1513,6 +1764,21 @@ def delete_request(request_id):
             return False
         save_requests(remaining)
     return True
+
+
+def set_request_reminder_muted(request_id, muted):
+    request_id = str(request_id or "").strip()
+    if not request_id:
+        return False
+    with REQUEST_LOCK:
+        items = load_requests()
+        for item in items:
+            if str(item.get("id") or "") != request_id:
+                continue
+            item["reminderMuted"] = bool(muted)
+            save_requests(items)
+            return True
+    return False
 
 
 def qbit_client_from_config(config):
@@ -1770,11 +2036,14 @@ def editable_config(config):
             }
             for requester_name, discord_id in discord_mappings.items()
         ],
+        "adminReminderWebhookUrl": admin_reminder_webhook_url(config),
+        "adminReminderIntervalMinutes": admin_reminder_interval_minutes(config),
         "destinations": [
             {
                 "id": item.get("id", ""),
                 "label": item.get("label", ""),
-                "path": item.get("path", ""),
+                "path": destination_paths(item)[0] if destination_paths(item) else "",
+                "paths": destination_paths(item),
                 "browseSubfolders": bool(item.get("browseSubfolders")),
             }
             for item in config.get("destinations", [])
@@ -1788,6 +2057,21 @@ def apply_editable_config(config, payload):
     plex = payload.get("plex", {})
     destinations = payload.get("destinations", [])
     discord_mappings = clean_discord_user_mappings(payload.get("discordUserMappings", []))
+    notifications = config.setdefault("notifications", {})
+    current_reminder_webhook = notifications.get("adminReminderWebhookUrl", "")
+    reminder_webhook = validate_discord_webhook_url(
+        payload.get("adminReminderWebhookUrl", current_reminder_webhook)
+    )
+    current_reminder_interval = notifications.get(
+        "adminReminderIntervalMinutes",
+        DEFAULT_ADMIN_REMINDER_INTERVAL_MINUTES,
+    )
+    try:
+        reminder_interval = int(payload.get("adminReminderIntervalMinutes", current_reminder_interval))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Admin reminder interval must be a whole number of minutes.") from exc
+    if not MIN_ADMIN_REMINDER_INTERVAL_MINUTES <= reminder_interval <= MAX_ADMIN_REMINDER_INTERVAL_MINUTES:
+        raise ValueError("Admin reminder interval must be between 1 and 10080 minutes.")
 
     qbit_url = str(qbit.get("url", "")).strip().rstrip("/")
     current_version = config.get("app", {}).get("version", DEFAULT_APP_VERSION)
@@ -1804,7 +2088,9 @@ def apply_editable_config(config, payload):
     config.setdefault("app", {})["version"] = app_version
     config.setdefault("qbittorrent", {})["url"] = qbit_url
     config.setdefault("plex", {})["databasePath"] = str(plex.get("databasePath", "")).strip()
-    config.setdefault("notifications", {})["discordUserMappings"] = discord_mappings
+    notifications["discordUserMappings"] = discord_mappings
+    notifications["adminReminderWebhookUrl"] = reminder_webhook
+    notifications["adminReminderIntervalMinutes"] = reminder_interval
 
     used = set()
     cleaned_destinations = []
@@ -1812,16 +2098,18 @@ def apply_editable_config(config, payload):
         if not isinstance(item, dict):
             continue
         label = str(item.get("label", "")).strip()
-        path = str(item.get("path", "")).strip()
-        if not label or not path:
-            raise ValueError("Destination label and path are required.")
+        raw_paths = item.get("paths") if isinstance(item.get("paths"), list) else [item.get("path", "")]
+        paths = destination_paths({"paths": raw_paths})
+        if not label or not paths:
+            raise ValueError("Destination label and at least one path are required.")
         raw_id = str(item.get("id", "")).strip()
         item_id = raw_id if raw_id and raw_id not in used else destination_id(label, used)
         used.add(item_id)
         cleaned_destinations.append({
             "id": item_id,
             "label": label,
-            "path": path,
+            "path": paths[0],
+            "paths": paths,
             "browseSubfolders": bool(item.get("browseSubfolders")),
         })
 
@@ -2353,7 +2641,11 @@ class AppHandler(BaseHTTPRequestHandler):
         destination = destinations.get(destination_id)
         if not destination or not destination.get("browseSubfolders"):
             return {"subfolders": []}
-        return {"subfolders": list_subfolders(destination["path"], parent_parts)}
+        try:
+            base_path = destination_base_path(destination, params.get("pathIndex", [""])[0])
+        except ValueError as exc:
+            return {"subfolders": [], "error": str(exc)}
+        return {"subfolders": list_subfolders(base_path, parent_parts)}
 
     def library_search_response(self, query):
         params = parse.parse_qs(query)
@@ -2418,6 +2710,8 @@ class AppHandler(BaseHTTPRequestHandler):
             return self.admin_config_save()
         if parsed.path == "/api/requests/fulfill":
             return self.mark_request_fulfilled()
+        if parsed.path == "/api/requests/reminder-mute":
+            return self.set_request_reminder_mute()
         if parsed.path == "/api/qbit/session":
             return self.qbit_session_action()
         if parsed.path == "/api/requests":
@@ -2433,6 +2727,7 @@ class AppHandler(BaseHTTPRequestHandler):
             magnet = str(payload.get("magnet", "")).strip()
             torrent_file = decode_torrent_upload(payload) if is_torrent_upload else None
             destination_id = str(payload.get("destinationId", "")).strip()
+            destination_path_index = payload.get("destinationPathIndex")
             download_name = validate_download_name(payload.get("downloadName", ""))
             use_subfolder = bool(payload.get("useSubfolder"))
             subfolder_name = str(payload.get("subfolderName", "")).strip()
@@ -2447,6 +2742,7 @@ class AppHandler(BaseHTTPRequestHandler):
             destination = destinations.get(destination_id)
             if not destination:
                 return self.send_json({"error": "Choose one of the preset destinations."}, HTTPStatus.BAD_REQUEST)
+            base_path = destination_base_path(destination, destination_path_index)
 
             if not isinstance(new_subfolders, list):
                 return self.send_json({"error": "New folders must be sent as a list."}, HTTPStatus.BAD_REQUEST)
@@ -2454,27 +2750,27 @@ class AppHandler(BaseHTTPRequestHandler):
             new_subfolders = [str(part).strip() for part in new_subfolders if str(part or "").strip()]
 
             if destination.get("browseSubfolders"):
-                available_subfolders = list_subfolders(destination["path"])
+                available_subfolders = list_subfolders(base_path)
                 if isinstance(existing_subfolder_path, list) and existing_subfolder_path:
                     existing_subfolder_path = [str(part).strip() for part in existing_subfolder_path if str(part).strip()]
-                    if not self.existing_subfolder_path_is_valid(destination["path"], existing_subfolder_path):
+                    if not self.existing_subfolder_path_is_valid(base_path, existing_subfolder_path):
                         return self.send_json({"error": "Choose one of the listed TV show folders."}, HTTPStatus.BAD_REQUEST)
-                    save_path = join_destination_path(destination["path"], existing_subfolder_path + new_subfolders)
+                    save_path = join_destination_path(base_path, existing_subfolder_path + new_subfolders)
                 elif existing_subfolder:
                     if existing_subfolder not in available_subfolders:
                         return self.send_json({"error": "Choose one of the listed TV show folders."}, HTTPStatus.BAD_REQUEST)
-                    save_path = join_destination_path(destination["path"], [existing_subfolder] + new_subfolders)
+                    save_path = join_destination_path(base_path, [existing_subfolder] + new_subfolders)
                 elif new_subfolders:
-                    save_path = join_destination_path(destination["path"], new_subfolders)
+                    save_path = join_destination_path(base_path, new_subfolders)
                 elif available_subfolders and not use_subfolder:
                     return self.send_json({"error": "Choose a TV show folder or create new folders."}, HTTPStatus.BAD_REQUEST)
                 else:
-                    save_path = destination_path(destination["path"], use_subfolder, subfolder_name)
+                    save_path = destination_path(base_path, use_subfolder, subfolder_name)
             else:
                 if new_subfolders:
-                    save_path = join_destination_path(destination["path"], new_subfolders)
+                    save_path = join_destination_path(base_path, new_subfolders)
                 else:
-                    save_path = destination_path(destination["path"], use_subfolder, subfolder_name)
+                    save_path = destination_path(base_path, use_subfolder, subfolder_name)
 
             qbit_config = self.server.config["qbittorrent"]
             client = QbittorrentClient(
@@ -2675,6 +2971,20 @@ class AppHandler(BaseHTTPRequestHandler):
         except OSError as exc:
             self.send_json({"error": f"Could not save fulfillment state: {exc}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
+    def set_request_reminder_mute(self):
+        if not self.require_admin():
+            return
+        try:
+            payload = self.read_json_body()
+            request_id = str(payload.get("id", "")).strip()
+            if not set_request_reminder_muted(request_id, bool(payload.get("muted"))):
+                return self.send_json({"error": "Request not found."}, HTTPStatus.NOT_FOUND)
+            self.send_json({"ok": True, "items": requests_for_display()})
+        except json.JSONDecodeError:
+            self.send_json({"error": "Invalid JSON."}, HTTPStatus.BAD_REQUEST)
+        except OSError as exc:
+            self.send_json({"error": f"Could not save request: {exc}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
     def qbit_session_action(self):
         if not self.require_admin():
             return
@@ -2723,6 +3033,7 @@ class AppHandler(BaseHTTPRequestHandler):
         return True
 
     def public_config(self):
+        is_admin = self.current_role() == "admin"
         return {
             "app": {
                 "version": str(self.server.config.get("app", {}).get("version", DEFAULT_APP_VERSION)),
@@ -2732,7 +3043,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     "id": item["id"],
                     "label": item["label"],
                     "browseSubfolders": bool(item.get("browseSubfolders")),
-                    "subfolders": list_subfolders(item["path"]) if item.get("browseSubfolders") else [],
+                    "directories": destination_directory_choices(item) if is_admin else [],
                 }
                 for item in self.server.config["destinations"]
             ],

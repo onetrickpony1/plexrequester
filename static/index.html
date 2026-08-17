@@ -125,6 +125,11 @@
                 <div class="destinations" id="destinations"></div>
               </fieldset>
 
+              <div class="destination-directory-field" id="destinationDirectoryField" hidden>
+                <label for="destinationDirectory">Directory</label>
+                <select id="destinationDirectory" name="destinationPathIndex"></select>
+              </div>
+
               <div class="folder-select" id="folderSelect" hidden>
                 <label>TV show folder</label>
                 <div class="folder-levels" id="folderLevels"></div>
@@ -227,13 +232,21 @@
         <section class="tab-panel" id="configPanel" role="tabpanel" aria-labelledby="configTabButton" hidden>
           <form class="config-form" id="configForm" autocomplete="off">
             <label for="configAppVersion">App version</label>
-            <input id="configAppVersion" type="text" maxlength="32" required placeholder="v7.2">
+            <input id="configAppVersion" type="text" maxlength="32" required placeholder="v7.7">
 
             <label for="configQbitUrl">qBittorrent URL</label>
             <input id="configQbitUrl" type="text">
 
             <label for="configPlexPath">Plex DB path</label>
             <input id="configPlexPath" type="text">
+
+            <label for="configAdminReminderWebhook">Admin reminder Discord webhook</label>
+            <input id="configAdminReminderWebhook" type="password" autocomplete="new-password" placeholder="https://discord.com/api/webhooks/…">
+            <p class="field-note">Sends one message per overdue, unmuted request to this webhook's channel.</p>
+
+            <label for="configAdminReminderInterval">Request reminder interval (minutes)</label>
+            <input id="configAdminReminderInterval" type="number" min="1" max="10080" step="1" required inputmode="numeric">
+            <p class="field-note">Controls the first reminder delay and subsequent repeats. Default: 60 minutes.</p>
 
             <div class="config-header">
               <label>Destinations</label>
