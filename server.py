@@ -27,7 +27,7 @@ PLEX_ANALYSIS_CACHE_LOCK = threading.RLock()
 PLEX_ANALYSIS_CACHE = {}
 PLEX_ANALYSIS_CACHE_SECONDS = 60
 MAX_TORRENT_FILE_SIZE = 10 * 1024 * 1024
-DEFAULT_APP_VERSION = "v8.1"
+DEFAULT_APP_VERSION = "v8.2"
 DEFAULT_SERVER_PORT = 8003
 DEFAULT_ADMIN_REMINDER_INTERVAL_MINUTES = 60
 MIN_ADMIN_REMINDER_INTERVAL_MINUTES = 1
@@ -833,6 +833,18 @@ def request_quality(value):
     return quality
 
 
+def quality_satisfies_request(requested_quality, available_qualities):
+    ranks = {"1080p": 1, "4K": 2, "REMUX": 3}
+    requested_rank = ranks[request_quality(requested_quality)]
+    if isinstance(available_qualities, str):
+        available_qualities = {available_qualities}
+    available_rank = max(
+        (ranks.get(str(quality), 0) for quality in (available_qualities or [])),
+        default=0,
+    )
+    return available_rank >= requested_rank
+
+
 def int_value(value):
     try:
         return int(float(value or 0))
@@ -1020,7 +1032,7 @@ def media_rows_for_library_item(database_path, item):
 def quality_warning(requested_quality, qualities, match_title="", match_year="", quality_summary=""):
     matched = f"{match_title} ({match_year})" if match_title and match_year else match_title
     detail = quality_summary or ", ".join(sorted(qualities, key=lambda value: ["1080p", "4K", "REMUX"].index(value)))
-    if requested_quality in qualities:
+    if quality_satisfies_request(requested_quality, qualities):
         suffix = f": {detail}" if detail else f" as {requested_quality}"
         return f"Found in Plex{f' - {matched}' if matched else ''}{suffix}. Please check first."
     if qualities:
@@ -1162,7 +1174,7 @@ def current_request_plex_status(config, item):
     qualities = analysis["qualities"]
     summary = analysis["summary"]
 
-    if requested_quality in qualities:
+    if quality_satisfies_request(requested_quality, qualities):
         return {
             "state": "fulfilled",
             "message": f"Fulfilled: {summary or requested_quality}.",
@@ -1623,12 +1635,7 @@ def discord_fulfillment_detail(item, fulfillment):
     if detail.startswith("Fulfilled:"):
         detail = detail[len("Fulfilled:"):].strip()
     detail = detail.rstrip(".")
-    quality_line = quality
-    if detail.lower() == quality.lower() or detail.lower().startswith(f"{quality.lower()} -"):
-        quality_line = detail
-    elif detail:
-        quality_line = f"{quality} - {detail}"
-    return quality_line.rstrip(".")
+    return (detail or quality).rstrip(".")
 
 
 def discord_fulfillment_embed(item, fulfillment):

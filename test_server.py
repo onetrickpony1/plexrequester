@@ -78,7 +78,7 @@ class UserDataStorageTests(unittest.TestCase):
 
 
 class AppVersionConfigTests(unittest.TestCase):
-    def payload(self, version="v8.1"):
+    def payload(self, version="v8.2"):
         return {
             "app": {"version": version},
             "qbittorrent": {"url": "http://localhost:8080"},
@@ -153,7 +153,7 @@ class MultiDirectoryDestinationTests(unittest.TestCase):
     def test_admin_config_saves_multiple_paths_and_legacy_first_path(self):
         config = {"notifications": {}}
         payload = {
-            "app": {"version": "v8.1"},
+            "app": {"version": "v8.2"},
             "qbittorrent": {"url": "http://localhost:8080"},
             "plex": {"databasePath": ""},
             "discordUserMappings": [],
@@ -618,6 +618,24 @@ class PublicLibraryAccessTests(unittest.TestCase):
 
 
 class RequestRefreshPerformanceTests(unittest.TestCase):
+    def test_quality_ladder_accepts_requested_tier_or_higher(self):
+        expectations = [
+            ("1080p", {"1080p"}, True),
+            ("1080p", {"4K"}, True),
+            ("1080p", {"REMUX"}, True),
+            ("4K", {"1080p"}, False),
+            ("4K", {"4K"}, True),
+            ("4K", {"REMUX", "1080p"}, True),
+            ("REMUX", {"1080p", "4K"}, False),
+            ("REMUX", {"REMUX", "4K"}, True),
+        ]
+        for requested, available, expected in expectations:
+            with self.subTest(requested=requested, available=available):
+                self.assertEqual(
+                    server.quality_satisfies_request(requested, available),
+                    expected,
+                )
+
     def test_detected_item_waits_until_plex_analysis_is_complete(self):
         item = {
             "quality": "1080p",
@@ -649,6 +667,42 @@ class RequestRefreshPerformanceTests(unittest.TestCase):
             result = server.current_request_plex_status({}, item)
         self.assertEqual(result["state"], "fulfilled")
         self.assertEqual(result["message"], "Fulfilled: 1080p - 12.5 Mbps - H264.")
+
+    def test_higher_quality_item_fulfills_lower_quality_request(self):
+        item = {
+            "quality": "1080p",
+            "tmdb": {"id": 1, "type": "movie", "title": "Example", "year": "2026"},
+        }
+        analysis = {
+            "match": {"id": 10, "type": "movie", "title": "Example", "year": "2026"},
+            "qualities": {"4K"},
+            "summary": "4K - 48 Mbps - HEVC",
+            "analyzed": True,
+        }
+        with mock.patch.object(server, "plex_analysis_for_tmdb", return_value=analysis):
+            result = server.current_request_plex_status({}, item)
+        self.assertEqual(result["state"], "fulfilled")
+        self.assertEqual(result["message"], "Fulfilled: 4K - 48 Mbps - HEVC.")
+        self.assertEqual(
+            server.discord_fulfillment_detail(item, result),
+            "4K - 48 Mbps - HEVC",
+        )
+
+    def test_lower_quality_item_does_not_fulfill_higher_quality_request(self):
+        item = {
+            "quality": "4K",
+            "tmdb": {"id": 1, "type": "movie", "title": "Example", "year": "2026"},
+        }
+        analysis = {
+            "match": {"id": 10, "type": "movie", "title": "Example", "year": "2026"},
+            "qualities": {"1080p"},
+            "summary": "1080p - 12.5 Mbps - H264",
+            "analyzed": True,
+        }
+        with mock.patch.object(server, "plex_analysis_for_tmdb", return_value=analysis):
+            result = server.current_request_plex_status({}, item)
+        self.assertEqual(result["state"], "partial")
+        self.assertIn("different quality", result["message"])
 
     def test_media_analysis_requires_bitrate_resolution_and_codec(self):
         complete = {"id": 1, "bitrate": 12500, "width": 1920, "height": 1080, "video_codec": "h264"}

@@ -2,7 +2,7 @@
 
 Plex Requester is a lightweight, self-hosted web app for collecting movie and TV requests and sending magnet links or `.torrent` files to qBittorrent. It includes TMDb lookup, Plex library checks, request fulfillment tracking, configurable download destinations, Discord notifications, and a qBittorrent monitoring dashboard.
 
-The current default version label is **v8.1**. Administrators can edit the label from the Config tab; it is displayed beside the Plex Requester title for all users and cached locally to prevent a stale-version flash during refresh. Versions increment only when project documents, source code, or documentation are edited.
+The current default version label is **v8.2**. Administrators can edit the label from the Config tab; it is displayed beside the Plex Requester title for all users and cached locally to prevent a stale-version flash during refresh. Versions increment only when project documents, source code, or documentation are edited.
 
 For portable project context, coding preferences, compatibility rules, and a future-release checklist, see [CODEX_HANDOFF.md](CODEX_HANDOFF.md).
 
@@ -17,6 +17,7 @@ The backend uses only the Python standard library. The frontend is plain HTML, C
 - Submit a free-form request when TMDb has no match.
 - Warn when a requested title already exists in Plex or exists at another quality.
 - Automatically check Plex for fulfilled requests and wait for complete bitrate, resolution, and codec analysis before sending the fulfillment notification.
+- Fulfill requests when Plex contains the requested quality or a higher tier (`1080p` < `4K` < `REMUX`).
 - Include the analyzed movie bitrate, or average bitrate across a TV show's discovered episodes, in the fulfillment details.
 - Refresh the visible request list every five seconds using cached fulfillment state while Plex reconciliation runs in the background.
 - Mark requests fulfilled manually as an administrator.
