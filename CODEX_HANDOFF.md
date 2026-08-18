@@ -84,7 +84,8 @@ Admins can add downloads using either magnet links or `.torrent` files.
 - Discord can notify when a request is created and when that request is fulfilled.
 - If a requester is mapped to a Discord user, mention that same user for both events.
 - Do not allow arbitrary user-provided mention syntax. Only mention IDs from the administrator-controlled mapping.
-- A separate administrator-configured webhook can receive one message per unfulfilled request after a configurable delay and at that same repeat interval thereafter. The web Config tab exposes the interval in minutes, defaulting to 60 for older configurations. Administrators can mute or unmute reminders per request from the Requests tab; these controls must remain admin-only and reminder messages must not parse mentions.
+- A separate administrator-configured webhook receives a polished summary of open, unmuted requests after a configurable delay and at that same repeat interval thereafter. Large summaries paginate within Discord limits. The web Config tab exposes the interval in minutes, defaulting to 60 for older configurations. Administrators can mute or unmute reminders per request from the Requests tab; these controls must remain admin-only and reminder messages must not parse mentions.
+- Persist notifications to `notification-outbox.json` before delivery. Retry temporary failures with bounded exponential backoff, retain recent sent jobs for idempotency, and never duplicate webhook URLs or tokens into the outbox.
 
 ## Runtime data and secrets
 
@@ -100,6 +101,7 @@ Expected runtime files include:
 
 - `config.json`
 - `auth-sessions.json`
+- `notification-outbox.json`
 - `requests.json`
 - `request-fulfillment-state.json`
 - `rename-history.jsonl`
@@ -112,6 +114,7 @@ Important rules:
 - There must be no fallback hardcoded administrator PIN. A missing PIN must not authenticate an empty input.
 - Legacy copies in the application directory may be copied into AppData only when the corresponding AppData destination does not exist.
 - Existing AppData always wins and is never overwritten by that migration.
+- Persistent JSON documents must be written through flushed same-directory temporary files and atomic replacement so an interrupted save leaves the previous valid file intact.
 - Runtime data, `.torrent` files, secrets, keys, environment files, generated executables, caches, logs, and editor artifacts should remain excluded from Git.
 - Before publishing to GitHub, scan tracked files for secrets and inspect `git status`.
 

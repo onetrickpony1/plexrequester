@@ -59,6 +59,7 @@ class UserDataStorageTests(unittest.TestCase):
         self.assertEqual(server.user_data_path("rename-history.jsonl"), self.data_dir / "rename-history.jsonl")
         self.assertEqual(server.user_data_path("config.json"), self.data_dir / "config.json")
         self.assertEqual(server.auth_store_path(), self.data_dir / "auth-sessions.json")
+        self.assertEqual(server.notification_outbox_path(), self.data_dir / "notification-outbox.json")
 
     def test_legacy_file_is_migrated_once(self):
         legacy = self.legacy_dir / "requests.json"
@@ -76,9 +77,58 @@ class UserDataStorageTests(unittest.TestCase):
         target.write_text('{"current": true}', encoding="utf-8")
         self.assertEqual(server.fulfillment_state_path().read_text(encoding="utf-8"), '{"current": true}')
 
+    def test_atomic_json_write_replaces_complete_file_and_cleans_temporary_file(self):
+        target = self.data_dir / "requests.json"
+        server.atomic_write_json(target, [{"id": "new"}])
+        self.assertEqual(json.loads(target.read_text(encoding="utf-8")), [{"id": "new"}])
+        self.assertTrue(target.read_text(encoding="utf-8").endswith("\n"))
+        self.assertEqual(list(target.parent.glob(f".{target.name}.*.tmp")), [])
+
+    def test_atomic_json_write_preserves_original_when_serialization_fails(self):
+        target = self.data_dir / "requests.json"
+        target.parent.mkdir(parents=True)
+        original = '[{"id": "original"}]\n'
+        target.write_text(original, encoding="utf-8")
+
+        def interrupted_dump(_payload, handle, indent=None):
+            handle.write('{"incomplete":')
+            handle.flush()
+            raise OSError("simulated interrupted write")
+
+        with (
+            mock.patch.object(server.json, "dump", side_effect=interrupted_dump),
+            self.assertRaisesRegex(OSError, "simulated interrupted write"),
+        ):
+            server.atomic_write_json(target, [{"id": "replacement"}])
+
+        self.assertEqual(target.read_text(encoding="utf-8"), original)
+        self.assertEqual(list(target.parent.glob(f".{target.name}.*.tmp")), [])
+
+    def test_all_json_stores_use_atomic_writer(self):
+        config_path = self.data_dir / "config.json"
+        config = {"_save_config_path": str(config_path), "app": {"version": "v8.3"}}
+        with mock.patch.object(server, "atomic_write_json") as atomic_write:
+            server.save_requests([{"id": "one"}])
+            server.save_fulfillment_state({"one": {"lastState": "open"}})
+            server.save_auth_sessions({"token": {"role": "admin"}})
+            server.save_notification_outbox([{"id": "notification"}])
+            server.save_config(config)
+
+        self.assertEqual(atomic_write.call_count, 5)
+        self.assertEqual(
+            [call.args[0].name for call in atomic_write.call_args_list],
+            [
+                "requests.json",
+                "request-fulfillment-state.json",
+                "auth-sessions.json",
+                "notification-outbox.json",
+                "config.json",
+            ],
+        )
+
 
 class AppVersionConfigTests(unittest.TestCase):
-    def payload(self, version="v8.2"):
+    def payload(self, version="v8.3"):
         return {
             "app": {"version": version},
             "qbittorrent": {"url": "http://localhost:8080"},
@@ -153,7 +203,7 @@ class MultiDirectoryDestinationTests(unittest.TestCase):
     def test_admin_config_saves_multiple_paths_and_legacy_first_path(self):
         config = {"notifications": {}}
         payload = {
-            "app": {"version": "v8.2"},
+            "app": {"version": "v8.3"},
             "qbittorrent": {"url": "http://localhost:8080"},
             "plex": {"databasePath": ""},
             "discordUserMappings": [],
@@ -296,6 +346,19 @@ class TorrentUploadTests(unittest.TestCase):
 
 class DiscordRequesterMentionTests(unittest.TestCase):
     discord_id = "123456789012345678"
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.env_patch = mock.patch.dict(
+            server.os.environ,
+            {"PLEX_REQUESTER_DATA_DIR": self.temp_dir.name},
+            clear=False,
+        )
+        self.env_patch.start()
+
+    def tearDown(self):
+        self.env_patch.stop()
+        self.temp_dir.cleanup()
 
     def config(self, mappings=None):
         notifications = {
@@ -467,6 +530,48 @@ class DiscordRequesterMentionTests(unittest.TestCase):
         self.assertIn("<@987654321098765432>", payload["embeds"][0]["fields"][0]["value"])
         self.assertEqual(urlopen.call_args.args[0].full_url, config["notifications"]["adminReminderWebhookUrl"])
 
+    def test_reminder_summary_paginates_after_twenty_five_fields(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b""
+        config = self.config()
+        config["notifications"]["adminReminderWebhookUrl"] = "https://discord.com/api/webhooks/123/token"
+        items = [
+            {"id": str(index), "requester": f"User {index}", "customTitle": f"Movie {index}", "requestedAt": 1}
+            for index in range(26)
+        ]
+        with mock.patch.object(server.request, "urlopen", return_value=response) as urlopen:
+            self.assertTrue(server.notify_admin_unfulfilled_requests(config, items, now=3601))
+        self.assertEqual(urlopen.call_count, 2)
+        payloads = [
+            json.loads(call.args[0].data.decode("utf-8"))
+            for call in urlopen.call_args_list
+        ]
+        self.assertEqual([len(payload["embeds"][0]["fields"]) for payload in payloads], [25, 1])
+        self.assertIn("Part 1 of 2", payloads[0]["embeds"][0]["description"])
+        self.assertIn("Part 2 of 2", payloads[1]["embeds"][0]["description"])
+
+    def test_reminder_pages_stay_within_discord_character_limit(self):
+        config = self.config()
+        items = [
+            {
+                "id": str(index),
+                "requester": "R" * 500,
+                "customTitle": f"{index}-" + ("T" * 500),
+                "quality": "Q" * 500,
+                "requestedAt": 1,
+            }
+            for index in range(30)
+        ]
+        embeds = server.discord_admin_reminder_embeds(config, items, now=3601)
+        self.assertGreater(len(embeds), 1)
+        self.assertEqual(sum(len(embed["fields"]) for embed in embeds), len(items))
+        for embed in embeds:
+            self.assertLessEqual(len(embed["fields"]), server.DISCORD_EMBED_MAX_FIELDS)
+            self.assertLessEqual(
+                server.discord_embed_character_count(embed),
+                server.DISCORD_EMBED_MAX_CHARACTERS,
+            )
+
     def test_waiting_time_uses_days_after_twenty_four_hours(self):
         item = {"requestedAt": 1}
         self.assertEqual(server.discord_waiting_time(item, now=3601), "1h")
@@ -590,6 +695,102 @@ class DiscordRequesterMentionTests(unittest.TestCase):
         handler.read_json_body = mock.Mock()
         handler.set_request_reminder_mute()
         handler.read_json_body.assert_not_called()
+
+
+class NotificationOutboxTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.env_patch = mock.patch.dict(
+            server.os.environ,
+            {"PLEX_REQUESTER_DATA_DIR": self.temp_dir.name},
+            clear=False,
+        )
+        self.env_patch.start()
+        self.config = {
+            "notifications": {
+                "discordWebhookUrl": "https://discord.com/api/webhooks/123/secret-token",
+            },
+        }
+
+    def tearDown(self):
+        self.env_patch.stop()
+        self.temp_dir.cleanup()
+
+    def response(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b""
+        return response
+
+    def test_failed_delivery_is_persisted_with_exponential_retry_metadata(self):
+        with mock.patch.object(server.request, "urlopen", side_effect=OSError("Discord unavailable")):
+            queued = server.queue_discord_notification(
+                self.config,
+                "primary",
+                "request-created:one",
+                embeds=[{"title": "New request"}],
+                now=100,
+            )
+        self.assertTrue(queued)
+        jobs = server.load_notification_outbox()
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["status"], "failed")
+        self.assertEqual(jobs[0]["attempts"], 1)
+        self.assertEqual(jobs[0]["nextAttemptAt"], 115)
+        self.assertIn("Discord unavailable", jobs[0]["lastError"])
+
+    def test_failed_delivery_retries_when_due_and_becomes_sent(self):
+        with mock.patch.object(server.request, "urlopen", side_effect=OSError("temporary failure")):
+            server.queue_discord_notification(
+                self.config,
+                "primary",
+                "request-fulfilled:one",
+                content="Ready",
+                now=100,
+            )
+
+        with mock.patch.object(server.request, "urlopen", return_value=self.response()) as urlopen:
+            self.assertEqual(server.process_notification_outbox(self.config, now=114), {"sent": 0, "failed": 0})
+            urlopen.assert_not_called()
+            self.assertEqual(server.process_notification_outbox(self.config, now=115), {"sent": 1, "failed": 0})
+            urlopen.assert_called_once()
+
+        job = server.load_notification_outbox()[0]
+        self.assertEqual(job["status"], "sent")
+        self.assertEqual(job["attempts"], 2)
+        self.assertEqual(job["sentAt"], 115)
+        self.assertEqual(job["lastError"], "")
+
+    def test_idempotency_key_prevents_duplicate_delivery(self):
+        with mock.patch.object(server.request, "urlopen", return_value=self.response()) as urlopen:
+            for _index in range(2):
+                self.assertTrue(server.queue_discord_notification(
+                    self.config,
+                    "primary",
+                    "request-created:same-request",
+                    content="Created",
+                    now=100,
+                ))
+        self.assertEqual(urlopen.call_count, 1)
+        self.assertEqual(len(server.load_notification_outbox()), 1)
+
+    def test_outbox_does_not_duplicate_webhook_secret(self):
+        with mock.patch.object(server.request, "urlopen", side_effect=OSError("offline")):
+            server.queue_discord_notification(
+                self.config,
+                "primary",
+                "request-created:secret-check",
+                content="Created",
+                now=100,
+            )
+        raw = server.notification_outbox_path().read_text(encoding="utf-8")
+        self.assertNotIn("secret-token", raw)
+        self.assertIn('"target": "primary"', raw)
+
+    def test_retry_delay_is_bounded(self):
+        self.assertEqual(server.notification_retry_delay(1), 15)
+        self.assertEqual(server.notification_retry_delay(2), 30)
+        self.assertEqual(server.notification_retry_delay(3), 60)
+        self.assertEqual(server.notification_retry_delay(100), 3600)
 
 
 class PublicLibraryAccessTests(unittest.TestCase):

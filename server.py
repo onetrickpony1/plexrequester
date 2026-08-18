@@ -23,12 +23,20 @@ import time
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 REQUEST_LOCK = threading.RLock()
+NOTIFICATION_OUTBOX_LOCK = threading.RLock()
 PLEX_ANALYSIS_CACHE_LOCK = threading.RLock()
 PLEX_ANALYSIS_CACHE = {}
 PLEX_ANALYSIS_CACHE_SECONDS = 60
 MAX_TORRENT_FILE_SIZE = 10 * 1024 * 1024
-DEFAULT_APP_VERSION = "v8.2"
+DEFAULT_APP_VERSION = "v8.3"
 DEFAULT_SERVER_PORT = 8003
+DISCORD_EMBED_MAX_FIELDS = 25
+DISCORD_EMBED_MAX_CHARACTERS = 6000
+DISCORD_REMINDER_FIELDS_CHARACTER_BUDGET = 5400
+NOTIFICATION_RETRY_BASE_SECONDS = 15
+NOTIFICATION_RETRY_MAX_SECONDS = 60 * 60
+NOTIFICATION_SENT_RETENTION_SECONDS = 30 * 24 * 60 * 60
+NOTIFICATION_OUTBOX_MAX_COMPLETED = 1000
 DEFAULT_ADMIN_REMINDER_INTERVAL_MINUTES = 60
 MIN_ADMIN_REMINDER_INTERVAL_MINUTES = 1
 MAX_ADMIN_REMINDER_INTERVAL_MINUTES = 7 * 24 * 60
@@ -38,6 +46,7 @@ USER_DATA_FILES = (
     "requests.json",
     "request-fulfillment-state.json",
     "auth-sessions.json",
+    "notification-outbox.json",
     "rename-history.jsonl",
     "plex-requester.log",
 )
@@ -62,6 +71,35 @@ def user_data_path(file_name):
         shutil.copy2(legacy, target)
         print(f"Migrated {file_name} to {target}", flush=True)
     return target
+
+
+def atomic_write_json(path, payload):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=str(path.parent),
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            json.dump(payload, handle, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 class MagnetAlreadyExists(RuntimeError):
@@ -799,9 +837,7 @@ def load_requests():
 
 
 def save_requests(items):
-    with request_store_path().open("w", encoding="utf-8") as handle:
-        json.dump(items, handle, indent=2)
-        handle.write("\n")
+    atomic_write_json(request_store_path(), items)
 
 
 def fulfillment_state_path():
@@ -821,9 +857,27 @@ def load_fulfillment_state():
 
 
 def save_fulfillment_state(state):
-    with fulfillment_state_path().open("w", encoding="utf-8") as handle:
-        json.dump(state, handle, indent=2)
-        handle.write("\n")
+    atomic_write_json(fulfillment_state_path(), state)
+
+
+def notification_outbox_path():
+    return user_data_path("notification-outbox.json")
+
+
+def load_notification_outbox():
+    path = notification_outbox_path()
+    if not path.exists():
+        return []
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, list) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def save_notification_outbox(items):
+    atomic_write_json(notification_outbox_path(), items)
 
 
 def request_quality(value):
@@ -1333,6 +1387,7 @@ def requests_for_display():
 
 
 def requests_with_fulfillment(config):
+    process_notification_outbox(config)
     with REQUEST_LOCK:
         source_items = load_requests()
         history = load_fulfillment_state()
@@ -1691,29 +1746,100 @@ def discord_waiting_time(item, now=None):
     return f"{age_minutes}m"
 
 
-def discord_admin_reminder_embed(config, items, now=None):
-    count = len(items)
-    fields = []
-    for item in items:
-        fields.append({
-            "name": request_display_title(item)[:256],
-            "value": "\n".join([
-                f"**Requester:** {str(item.get('requester') or 'Unknown')[:160]}",
-                f"**Quality:** {str(item.get('quality') or '1080p')[:80]}",
-                f"**Waiting:** {discord_waiting_time(item, now)}",
-            ])[:1024],
-            "inline": False,
-        })
-    interval = admin_reminder_interval_minutes(config)
+def discord_admin_reminder_field(item, now=None):
     return {
+        "name": request_display_title(item)[:256],
+        "value": "\n".join([
+            f"**Requester:** {str(item.get('requester') or 'Unknown')[:160]}",
+            f"**Quality:** {str(item.get('quality') or '1080p')[:80]}",
+            f"**Waiting:** {discord_waiting_time(item, now)}",
+        ])[:1024],
+        "inline": False,
+    }
+
+
+def discord_embed_character_count(embed):
+    total = len(str(embed.get("title") or "")) + len(str(embed.get("description") or ""))
+    footer = embed.get("footer")
+    if isinstance(footer, dict):
+        total += len(str(footer.get("text") or ""))
+    author = embed.get("author")
+    if isinstance(author, dict):
+        total += len(str(author.get("name") or ""))
+    for field in embed.get("fields") or []:
+        if isinstance(field, dict):
+            total += len(str(field.get("name") or ""))
+            total += len(str(field.get("value") or ""))
+    return total
+
+
+def discord_admin_reminder_embed(
+    config,
+    items,
+    now=None,
+    page_number=1,
+    page_count=1,
+    total_count=None,
+):
+    total_count = len(items) if total_count is None else int(total_count)
+    count = len(items)
+    page_text = f" Part {page_number} of {page_count}." if page_count > 1 else ""
+    interval = admin_reminder_interval_minutes(config)
+    embed = {
         "title": "Unfulfilled Plex Requests",
-        "description": f"{count} unmuted request{'s are' if count != 1 else ' is'} still waiting to be fulfilled.",
+        "description": (
+            f"{total_count} unmuted request{'s are' if total_count != 1 else ' is'} still waiting to be fulfilled."
+            f"{page_text}"
+        ),
         "color": 0xE5A00D,
-        "fields": fields,
+        "fields": [discord_admin_reminder_field(item, now) for item in items],
         "footer": {
-            "text": f"Reminder schedule: every {interval} minute{'s' if interval != 1 else ''} • Muted requests are excluded",
+            "text": (
+                f"Reminder schedule: every {interval} minute{'s' if interval != 1 else ''}"
+                f" • {count} request{'s' if count != 1 else ''} in this message"
+                " • Muted requests are excluded"
+            ),
         },
     }
+    if len(embed["fields"]) > DISCORD_EMBED_MAX_FIELDS:
+        raise ValueError("Discord reminder embed exceeds the 25-field limit.")
+    if discord_embed_character_count(embed) > DISCORD_EMBED_MAX_CHARACTERS:
+        raise ValueError("Discord reminder embed exceeds the 6000-character limit.")
+    return embed
+
+
+def discord_admin_reminder_embeds(config, items, now=None):
+    items = list(items or [])
+    if not items:
+        return []
+    batches = []
+    batch = []
+    field_characters = 0
+    for item in items:
+        field = discord_admin_reminder_field(item, now)
+        item_characters = len(field["name"]) + len(field["value"])
+        if batch and (
+            len(batch) >= DISCORD_EMBED_MAX_FIELDS
+            or field_characters + item_characters > DISCORD_REMINDER_FIELDS_CHARACTER_BUDGET
+        ):
+            batches.append(batch)
+            batch = []
+            field_characters = 0
+        batch.append(item)
+        field_characters += item_characters
+    if batch:
+        batches.append(batch)
+    return [
+        discord_admin_reminder_embed(
+            config,
+            batch_items,
+            now,
+            page_number=index + 1,
+            page_count=len(batches),
+            total_count=len(items),
+        )
+        for index, batch_items in enumerate(batches)
+    ]
 
 
 def send_discord_webhook(url, content="", allowed_user_id="", embeds=None):
@@ -1742,20 +1868,152 @@ def send_discord_webhook(url, content="", allowed_user_id="", embeds=None):
     return True
 
 
-def send_discord_message(config, content="", allowed_user_id="", embeds=None):
-    return send_discord_webhook(
-        discord_webhook_url(config),
-        content,
-        allowed_user_id,
-        embeds,
-    )
+def notification_target_url(config, target):
+    if target == "primary":
+        return discord_webhook_url(config)
+    if target == "admin-reminder":
+        return admin_reminder_webhook_url(config)
+    return ""
+
+
+def notification_job_id(idempotency_key):
+    return hashlib.sha256(str(idempotency_key).encode("utf-8")).hexdigest()
+
+
+def notification_retry_delay(attempts):
+    exponent = max(0, min(int(attempts or 1) - 1, 12))
+    return min(NOTIFICATION_RETRY_MAX_SECONDS, NOTIFICATION_RETRY_BASE_SECONDS * (2 ** exponent))
+
+
+def prune_notification_outbox(items, now=None):
+    now = int(time.time()) if now is None else int(now)
+    retained = []
+    completed = []
+    cutoff = now - NOTIFICATION_SENT_RETENTION_SECONDS
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if item.get("status") == "sent":
+            if int_value(item.get("sentAt")) >= cutoff:
+                completed.append(item)
+        else:
+            retained.append(item)
+    completed.sort(key=lambda item: int_value(item.get("sentAt")), reverse=True)
+    completed = completed[:NOTIFICATION_OUTBOX_MAX_COMPLETED]
+    result = retained + completed
+    result.sort(key=lambda item: int_value(item.get("createdAt")))
+    return result
+
+
+def process_notification_outbox(config, now=None, job_ids=None, max_jobs=5):
+    now = int(time.time()) if now is None else int(now)
+    wanted_ids = set(job_ids or [])
+    sent = 0
+    failed = 0
+    with NOTIFICATION_OUTBOX_LOCK:
+        items = prune_notification_outbox(load_notification_outbox(), now)
+        processed = 0
+        for item in items:
+            if processed >= max(1, int(max_jobs or 1)):
+                break
+            if wanted_ids and item.get("id") not in wanted_ids:
+                continue
+            if item.get("status") not in {"pending", "failed"}:
+                continue
+            if int_value(item.get("nextAttemptAt")) > now:
+                continue
+            processed += 1
+            item["attempts"] = int_value(item.get("attempts")) + 1
+            item["lastAttemptAt"] = now
+            save_notification_outbox(items)
+            try:
+                webhook_url = notification_target_url(config, item.get("target"))
+                if not webhook_url:
+                    raise RuntimeError("The configured Discord webhook is empty.")
+                delivered = send_discord_webhook(
+                    webhook_url,
+                    item.get("content", ""),
+                    item.get("allowedUserId", ""),
+                    item.get("embeds") or None,
+                )
+                if not delivered:
+                    raise RuntimeError("Discord webhook delivery was not accepted.")
+                item["status"] = "sent"
+                item["sentAt"] = now
+                item["nextAttemptAt"] = 0
+                item["lastError"] = ""
+                sent += 1
+            except Exception as exc:
+                item["status"] = "failed"
+                item["lastError"] = str(exc)[:1000]
+                item["nextAttemptAt"] = now + notification_retry_delay(item["attempts"])
+                failed += 1
+                print(
+                    f"Discord notification delivery failed; retry scheduled: {exc}",
+                    flush=True,
+                )
+            save_notification_outbox(items)
+    return {"sent": sent, "failed": failed}
+
+
+def queue_discord_notification(
+    config,
+    target,
+    idempotency_key,
+    content="",
+    allowed_user_id="",
+    embeds=None,
+    now=None,
+):
+    if not notification_target_url(config, target):
+        return False
+    now = int(time.time()) if now is None else int(now)
+    job_id = notification_job_id(idempotency_key)
+    with NOTIFICATION_OUTBOX_LOCK:
+        items = prune_notification_outbox(load_notification_outbox(), now)
+        existing = next((item for item in items if item.get("id") == job_id), None)
+        if existing is None:
+            items.append({
+                "id": job_id,
+                "idempotencyKey": str(idempotency_key)[:500],
+                "target": target,
+                "content": str(content)[:2000],
+                "allowedUserId": str(allowed_user_id or ""),
+                "embeds": list(embeds or [])[:10],
+                "status": "pending",
+                "attempts": 0,
+                "createdAt": now,
+                "lastAttemptAt": 0,
+                "nextAttemptAt": now,
+                "sentAt": 0,
+                "lastError": "",
+            })
+            save_notification_outbox(items)
+        elif existing.get("status") == "sent":
+            return True
+    process_notification_outbox(config, now=now, job_ids={job_id}, max_jobs=1)
+    return True
+
+
+def request_notification_identity(item):
+    request_id = str(item.get("id") or "").strip()
+    if request_id:
+        return request_id
+    fallback = {
+        "requestedAt": int_value(item.get("requestedAt")),
+        "requester": str(item.get("requester") or ""),
+        "title": request_display_title(item),
+    }
+    return notification_job_id(json.dumps(fallback, sort_keys=True))
 
 
 def notify_request_created(config, item):
     try:
         discord_user_id = discord_user_id_for_requester(config, item.get("requester"))
-        send_discord_message(
+        return queue_discord_notification(
             config,
+            "primary",
+            f"request-created:{request_notification_identity(item)}",
             f"<@{validate_discord_user_id(discord_user_id)}> your request has been received."
             if discord_user_id else "",
             discord_user_id,
@@ -1768,8 +2026,10 @@ def notify_request_created(config, item):
 def notify_request_fulfilled(config, item, fulfillment):
     try:
         discord_user_id = discord_user_id_for_requester(config, item.get("requester"))
-        return send_discord_message(
+        return queue_discord_notification(
             config,
+            "primary",
+            f"request-fulfilled:{request_notification_identity(item)}",
             f"<@{validate_discord_user_id(discord_user_id)}> your request is now available on Plex."
             if discord_user_id else "",
             discord_user_id,
@@ -1780,15 +2040,26 @@ def notify_request_fulfilled(config, item, fulfillment):
         return False
 
 
-def notify_admin_unfulfilled_requests(config, items, now=None):
+def notify_admin_unfulfilled_requests(config, items, now=None, notification_key=""):
     url = admin_reminder_webhook_url(config)
     if not url or not items:
         return False
     try:
-        return send_discord_webhook(
-            url,
-            embeds=[discord_admin_reminder_embed(config, items, now)],
-        )
+        now = int(time.time()) if now is None else int(now)
+        if not notification_key:
+            identities = [request_notification_identity(item) for item in items]
+            notification_key = f"admin-reminder:{now}:{notification_job_id('|'.join(identities))}"
+        embeds = discord_admin_reminder_embeds(config, items, now)
+        for index, embed in enumerate(embeds):
+            if not queue_discord_notification(
+                config,
+                "admin-reminder",
+                f"{notification_key}:part:{index + 1}",
+                embeds=[embed],
+                now=now,
+            ):
+                return False
+        return True
     except Exception as exc:
         print(f"Could not send Discord admin reminder: {exc}", flush=True)
         return False
@@ -1833,6 +2104,10 @@ def send_due_admin_reminders(config, items, history, now=None):
         config,
         [item for item, _entry in active_requests],
         now,
+        notification_key=(
+            f"admin-reminder:{now}:"
+            f"{notification_job_id('|'.join(request_notification_identity(item) for item, _entry in active_requests))}"
+        ),
     ):
         for _item, entry in active_requests:
             entry["lastAdminReminderAt"] = now
@@ -2024,10 +2299,7 @@ def config_for_save(config):
 
 def save_config(config):
     path = Path(config.get("_save_config_path") or config.get("_config_path") or user_data_path("config.json"))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        json.dump(config_for_save(config), handle, indent=2)
-        handle.write("\n")
+    atomic_write_json(path, config_for_save(config))
     config["_config_path"] = str(path)
     config["_save_config_path"] = str(path)
     config["_using_example_config"] = False
@@ -2071,9 +2343,7 @@ def load_auth_sessions():
 
 
 def save_auth_sessions(sessions):
-    with auth_store_path().open("w", encoding="utf-8") as handle:
-        json.dump(sessions, handle, indent=2)
-        handle.write("\n")
+    atomic_write_json(auth_store_path(), sessions)
 
 
 def prune_auth_sessions(sessions):

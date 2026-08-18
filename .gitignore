@@ -3,6 +3,7 @@ config.json
 requests.json
 request-fulfillment-state.json
 auth-sessions.json
+notification-outbox.json
 rename-history.jsonl
 plex-requester.log
 runtime/

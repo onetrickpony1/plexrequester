@@ -2,7 +2,7 @@
 
 Plex Requester is a lightweight, self-hosted web app for collecting movie and TV requests and sending magnet links or `.torrent` files to qBittorrent. It includes TMDb lookup, Plex library checks, request fulfillment tracking, configurable download destinations, Discord notifications, and a qBittorrent monitoring dashboard.
 
-The current default version label is **v8.2**. Administrators can edit the label from the Config tab; it is displayed beside the Plex Requester title for all users and cached locally to prevent a stale-version flash during refresh. Versions increment only when project documents, source code, or documentation are edited.
+The current default version label is **v8.3**. Administrators can edit the label from the Config tab; it is displayed beside the Plex Requester title for all users and cached locally to prevent a stale-version flash during refresh. Versions increment only when project documents, source code, or documentation are edited.
 
 For portable project context, coding preferences, compatibility rules, and a future-release checklist, see [CODEX_HANDOFF.md](CODEX_HANDOFF.md).
 
@@ -22,7 +22,9 @@ The backend uses only the Python standard library. The frontend is plain HTML, C
 - Refresh the visible request list every five seconds using cached fulfillment state while Plex reconciliation runs in the background.
 - Mark requests fulfilled manually as an administrator.
 - Send optional Discord notifications for new and fulfilled requests.
+- Persist Discord notifications before delivery and retry temporary failures with bounded exponential backoff.
 - Send a polished Discord summary of all open, unmuted requests using an administrator-configurable reminder interval.
+- Automatically paginate large Discord reminder summaries within Discord's field and character limits.
 - Let administrators mute or unmute reminders on individual requests.
 - Mention a mapped Discord user when their request is created and fulfilled without enabling arbitrary mentions.
 
@@ -204,7 +206,7 @@ or escape every backslash:
 "path": "D:\\Media\\Movies"
 ```
 
-The web Config tab lets an administrator change the qBittorrent URL, Plex database path, and destinations. Credentials, API keys, the Discord webhook, and the admin PIN should be managed in `config.json`, with environment variables, or through the Windows launcher where supported.
+The web Config tab lets an administrator change the qBittorrent URL, Plex database path, destinations, and both Discord webhooks. Other credentials, API keys, and the admin PIN should be managed in `config.json`, with environment variables, or through the Windows launcher where supported.
 
 When a destination contains multiple paths, the Download tab shows a compact directory selector. Its default is the directory with the highest drive usage below 90%. Once that drive reaches 90%, the next fullest directory below 90% becomes the default. If every drive is at least 90% full, the least-full available drive is selected as a safe fallback. The chosen index is validated against the configured list by the server; arbitrary paths are not accepted from the browser.
 
@@ -288,7 +290,7 @@ The fulfillment monitor checks pending TMDb-backed requests after startup and th
 
 Use the administrator Config tab to set the Discord webhook for new-request and fulfillment notifications.
 
-Use the same Config tab to set a separate admin reminder Discord webhook. The Config tab's **Request reminder interval (minutes)** setting controls both the first reminder delay and subsequent repeats; it defaults to 60 minutes and accepts 1 through 10080 minutes. When a reminder is due, one Discord embed summarizes every open, unmuted request with its requester, requested quality, and waiting time. Waiting times use days after 24 hours. Administrators can mute or unmute an individual request from the Requests tab. Reminder messages disable Discord mention parsing.
+Use the same Config tab to set a separate admin reminder Discord webhook. The Config tab's **Request reminder interval (minutes)** setting controls both the first reminder delay and subsequent repeats; it defaults to 60 minutes and accepts 1 through 10080 minutes. When a reminder is due, Discord summaries cover every open, unmuted request with its requester, requested quality, and waiting time. Large summaries are automatically divided into numbered parts that stay within Discord's field and character limits. Waiting times use days after 24 hours. Administrators can mute or unmute an individual request from the Requests tab. Reminder messages disable Discord mention parsing.
 
 New-request, fulfillment, and reminder notifications use structured Discord embeds with Plex-themed colors. Notifications can include:
 
@@ -298,6 +300,8 @@ New-request, fulfillment, and reminder notifications use structured Discord embe
 - A requester-specific Discord mention on both creation and fulfillment when an administrator has mapped the entered requester name to a Discord user ID.
 
 Requester mappings can be managed from the administrator Config page. Matching ignores case and surrounding whitespace. Mentions remain globally disabled in webhook payloads except for the single validated Discord user ID resolved from the administrator-managed mapping.
+
+Every request, fulfillment, and reminder notification is written atomically to `notification-outbox.json` before its first delivery attempt. Temporary failures retain the attempt count and error, then retry after 15 seconds with exponential backoff capped at one hour. Sent jobs are retained for 30 days to prevent the same event from being queued twice. Pending jobs resolve the currently configured primary or reminder webhook when delivered, so webhook URLs and tokens are not duplicated into the outbox. Delivery is at least once: an exceptional process or machine failure after Discord accepts a message but before the sent state reaches disk can cause that message to be retried.
 
 ## Download naming and seeding
 
@@ -330,7 +334,7 @@ The generated standalone executable provides a management window that:
 - Starts and stops the embedded standalone backend without using a system Python installation.
 - Displays backend logs.
 - Opens the website.
-- Saves the TMDb key and Discord webhook.
+- Saves the TMDb key; Discord webhooks are managed from the administrator Config page.
 - Configures the HTTP port used locally and through Tailscale, then restarts the server.
 - Displays torrent rename history.
 - Stops the server when the window closes.
@@ -359,11 +363,14 @@ Plex Requester stores mutable application data in `%LOCALAPPDATA%\Plex Requester
 | `requests.json` | Current media requests |
 | `request-fulfillment-state.json` | Automatic and manual fulfillment history |
 | `auth-sessions.json` | Active administrator session tokens |
+| `notification-outbox.json` | Pending, failed, and recently sent Discord notification jobs |
 | `rename-history.jsonl` | Successful qBittorrent content renames |
 | `plex-requester.log` | Windows launcher and backend operational log |
 | `runtime/` | Automatically managed backend extracted from the standalone release EXE |
 
-On first access after upgrading, `config.json`, `requests.json`, `request-fulfillment-state.json`, `auth-sessions.json`, `rename-history.jsonl`, and `plex-requester.log` are copied from the application directory when the corresponding AppData file does not already exist. Existing AppData files are never overwritten. File names and JSON formats are unchanged, so these files can also be copied directly into or out of the AppData folder. `APP_CONFIG` remains available when an explicit alternate configuration path is required.
+On first access after upgrading, `config.json`, `requests.json`, `request-fulfillment-state.json`, `auth-sessions.json`, `notification-outbox.json`, `rename-history.jsonl`, and `plex-requester.log` are copied from the application directory when the corresponding AppData file does not already exist. Existing AppData files are never overwritten. File names and JSON formats are unchanged, so these files can also be copied directly into or out of the AppData folder. `APP_CONFIG` remains available when an explicit alternate configuration path is required.
+
+Writes to `config.json`, `requests.json`, `request-fulfillment-state.json`, `auth-sessions.json`, and `notification-outbox.json` are flushed to a temporary file in the same directory and atomically replace the previous file only after the complete JSON document is safely written. If a write is interrupted, the previous valid file remains in place and the incomplete temporary file is cleaned up on the handled failure path. The Windows launcher uses the same replacement approach when creating or editing `config.json`.
 
 Back up the files you need, restrict their filesystem permissions, and do not commit secrets to source control.
 

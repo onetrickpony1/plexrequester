@@ -55,7 +55,7 @@ public class PlexRequesterLauncher : Form
         appDir = AppDomain.CurrentDomain.BaseDirectory;
         dataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Plex Requester");
         Directory.CreateDirectory(dataDir);
-        foreach (string fileName in new[] { "config.json", "requests.json", "request-fulfillment-state.json", "auth-sessions.json", "rename-history.jsonl", "plex-requester.log" })
+        foreach (string fileName in new[] { "config.json", "requests.json", "request-fulfillment-state.json", "auth-sessions.json", "notification-outbox.json", "rename-history.jsonl", "plex-requester.log" })
         {
             string legacyPath = Path.Combine(appDir, fileName);
             string dataPath = Path.Combine(dataDir, fileName);
@@ -349,9 +349,51 @@ public class PlexRequesterLauncher : Form
             {
                 throw new InvalidOperationException("The embedded configuration template is missing.");
             }
-            using (var target = new FileStream(configPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            using (var reader = new StreamReader(source))
             {
-                source.CopyTo(target);
+                WriteAllTextAtomic(configPath, reader.ReadToEnd());
+            }
+        }
+    }
+
+    private static void WriteAllTextAtomic(string path, string contents)
+    {
+        string directory = Path.GetDirectoryName(path);
+        if (String.IsNullOrEmpty(directory))
+        {
+            directory = Directory.GetCurrentDirectory();
+        }
+        Directory.CreateDirectory(directory);
+        string temporaryPath = Path.Combine(
+            directory,
+            "." + Path.GetFileName(path) + "." + Guid.NewGuid().ToString("N") + ".tmp"
+        );
+
+        try
+        {
+            using (var stream = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            using (var writer = new StreamWriter(stream))
+            {
+                writer.Write(contents);
+                writer.Flush();
+                stream.Flush(true);
+            }
+
+            if (File.Exists(path))
+            {
+                File.Replace(temporaryPath, path, null);
+            }
+            else
+            {
+                File.Move(temporaryPath, path);
+            }
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath))
+            {
+                try { File.Delete(temporaryPath); }
+                catch { }
             }
         }
     }
@@ -549,7 +591,7 @@ public class PlexRequesterLauncher : Form
             tmdb["apiKey"] = key;
             config["tmdb"] = tmdb;
 
-            File.WriteAllText(configPath, serializer.Serialize(config));
+            WriteAllTextAtomic(configPath, serializer.Serialize(config));
             tmdbKeyBox.Text = "";
             UpdateTmdbKeyStatus();
             AppendLog("TMDb API key saved to config.json.");
@@ -589,7 +631,7 @@ public class PlexRequesterLauncher : Form
             server["port"] = selectedPort;
             config["server"] = server;
 
-            File.WriteAllText(configPath, serializer.Serialize(config));
+            WriteAllTextAtomic(configPath, serializer.Serialize(config));
             serverPort = selectedPort;
             AppendLog("Server / Tailscale port saved: " + serverPort);
             RestartServer();

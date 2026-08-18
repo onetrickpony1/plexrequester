@@ -1076,7 +1076,7 @@ async function loadAdminConfig() {
 }
 
 function renderConfig(config) {
-  configAppVersion.value = config.app?.version || "v8.2";
+  configAppVersion.value = config.app?.version || "v8.3";
   configQbitUrl.value = config.qbittorrent?.url || "";
   configPlexPath.value = config.plex?.databasePath || "";
   configDiscordWebhook.value = config.discordWebhookUrl || "";
