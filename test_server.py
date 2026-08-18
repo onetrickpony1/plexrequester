@@ -78,7 +78,7 @@ class UserDataStorageTests(unittest.TestCase):
 
 
 class AppVersionConfigTests(unittest.TestCase):
-    def payload(self, version="v8.0"):
+    def payload(self, version="v8.1"):
         return {
             "app": {"version": version},
             "qbittorrent": {"url": "http://localhost:8080"},
@@ -153,7 +153,7 @@ class MultiDirectoryDestinationTests(unittest.TestCase):
     def test_admin_config_saves_multiple_paths_and_legacy_first_path(self):
         config = {"notifications": {}}
         payload = {
-            "app": {"version": "v8.0"},
+            "app": {"version": "v8.1"},
             "qbittorrent": {"url": "http://localhost:8080"},
             "plex": {"databasePath": ""},
             "discordUserMappings": [],
@@ -335,9 +335,13 @@ class DiscordRequesterMentionTests(unittest.TestCase):
             self.config({"Matthew": self.discord_id}),
             self.item("Matthew"),
         )
-        self.assertIn(f"Notify: <@{self.discord_id}>", payload["content"])
-        self.assertIn("Requester: Matthew", payload["content"])
+        self.assertIn(f"<@{self.discord_id}>", payload["content"])
+        self.assertIn("request has been received", payload["content"])
         self.assertEqual(payload["allowed_mentions"], {"parse": [], "users": [self.discord_id]})
+        embed = payload["embeds"][0]
+        self.assertEqual(embed["title"], "New Plex Request")
+        self.assertEqual(embed["fields"][0]["value"], "Matthew")
+        self.assertEqual(embed["color"], 0xE5A00D)
 
     def test_mapping_is_case_insensitive_and_whitespace_trimmed(self):
         config = self.config({"Matthew": self.discord_id})
@@ -349,8 +353,9 @@ class DiscordRequesterMentionTests(unittest.TestCase):
             self.config({"Matthew": self.discord_id}),
             self.item("John"),
         )
-        self.assertNotIn("<@", payload["content"])
+        self.assertNotIn("content", payload)
         self.assertEqual(payload["allowed_mentions"], {"parse": []})
+        self.assertEqual(payload["embeds"][0]["fields"][0]["value"], "John")
 
     def test_requester_markup_cannot_trigger_arbitrary_mention(self):
         attacker_id = "987654321098765432"
@@ -358,8 +363,26 @@ class DiscordRequesterMentionTests(unittest.TestCase):
             self.config({"Matthew": self.discord_id}),
             self.item(f"<@{attacker_id}>"),
         )
-        self.assertIn(f"Requester: <@{attacker_id}>", payload["content"])
+        self.assertNotIn("content", payload)
+        self.assertEqual(payload["embeds"][0]["fields"][0]["value"], f"<@{attacker_id}>")
         self.assertEqual(payload["allowed_mentions"], {"parse": []})
+
+    def test_request_embed_includes_tmdb_context_and_library_note(self):
+        item = self.item("Matthew")
+        item["tmdb"] = {
+            "id": 123,
+            "type": "movie",
+            "title": "Example Movie",
+            "year": 2026,
+            "overview": "A polished overview.",
+            "posterPath": "/poster.jpg",
+        }
+        item["libraryWarning"] = "A lower-quality copy is already in Plex."
+        embed = server.discord_request_embed(item)
+        self.assertEqual(embed["url"], "https://www.themoviedb.org/movie/123")
+        self.assertEqual(embed["thumbnail"]["url"], "https://image.tmdb.org/t/p/w342/poster.jpg")
+        self.assertIn("A polished overview.", embed["description"])
+        self.assertEqual(embed["fields"][-1]["name"], "Library note")
 
     def test_invalid_discord_id_cannot_be_saved(self):
         config = {"notifications": {}}
@@ -531,8 +554,13 @@ class DiscordRequesterMentionTests(unittest.TestCase):
         payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
         self.assertTrue(result)
         self.assertEqual(payload["allowed_mentions"], {"parse": [], "users": [self.discord_id]})
-        self.assertIn(f"Notify: <@{self.discord_id}>", payload["content"])
-        self.assertIn("Requester: Matthew", payload["content"])
+        self.assertIn(f"<@{self.discord_id}>", payload["content"])
+        self.assertIn("now available on Plex", payload["content"])
+        embed = payload["embeds"][0]
+        self.assertEqual(embed["title"], "Now Available on Plex")
+        self.assertEqual(embed["fields"][0]["value"], "Matthew")
+        self.assertEqual(embed["fields"][2]["value"], "1080p")
+        self.assertEqual(embed["color"], 0x57F287)
 
     def test_unmapped_fulfillment_notification_keeps_mentions_disabled(self):
         response = mock.MagicMock()
@@ -546,7 +574,8 @@ class DiscordRequesterMentionTests(unittest.TestCase):
         payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
         self.assertTrue(result)
         self.assertEqual(payload["allowed_mentions"], {"parse": []})
-        self.assertNotIn("<@", payload["content"])
+        self.assertNotIn("content", payload)
+        self.assertEqual(payload["embeds"][0]["fields"][0]["value"], "John")
 
     def test_admin_config_save_stops_before_reading_body_when_unauthorized(self):
         handler = object.__new__(server.AppHandler)

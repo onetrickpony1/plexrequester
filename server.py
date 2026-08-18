@@ -27,7 +27,7 @@ PLEX_ANALYSIS_CACHE_LOCK = threading.RLock()
 PLEX_ANALYSIS_CACHE = {}
 PLEX_ANALYSIS_CACHE_SECONDS = 60
 MAX_TORRENT_FILE_SIZE = 10 * 1024 * 1024
-DEFAULT_APP_VERSION = "v8.0"
+DEFAULT_APP_VERSION = "v8.1"
 DEFAULT_SERVER_PORT = 8003
 DEFAULT_ADMIN_REMINDER_INTERVAL_MINUTES = 60
 MIN_ADMIN_REMINDER_INTERVAL_MINUTES = 1
@@ -1571,24 +1571,53 @@ def tmdb_url_for_item(item):
     return ""
 
 
-def discord_request_message(item, discord_user_id=""):
-    lines = [
-        f"New request: {request_display_title(item)}",
-        f"Requester: {item.get('requester') or 'Unknown'}",
-        f"Quality: {item.get('quality') or '1080p'}",
-    ]
-    if discord_user_id:
-        lines.append(f"Notify: <@{validate_discord_user_id(discord_user_id)}>")
+def tmdb_poster_url_for_item(item):
+    tmdb_item = item.get("tmdb")
+    poster_path = str(tmdb_item.get("posterPath") or "").strip() if isinstance(tmdb_item, dict) else ""
+    return f"https://image.tmdb.org/t/p/w342{poster_path}" if poster_path.startswith("/") else ""
+
+
+def discord_request_embed(item):
+    title = request_display_title(item)[:300]
     tmdb_url = tmdb_url_for_item(item)
-    if tmdb_url:
-        lines.append(f"TMDb: {tmdb_url}")
+    tmdb_item = item.get("tmdb") if isinstance(item.get("tmdb"), dict) else {}
+    overview = str(tmdb_item.get("overview") or "").strip()
     warning = str(item.get("libraryWarning") or "").strip()
+    fields = [
+        {
+            "name": "Requester",
+            "value": str(item.get("requester") or "Unknown")[:1024],
+            "inline": True,
+        },
+        {
+            "name": "Requested quality",
+            "value": str(item.get("quality") or "1080p")[:1024],
+            "inline": True,
+        },
+        {
+            "name": "Status",
+            "value": "Waiting to be added to Plex",
+            "inline": False,
+        },
+    ]
     if warning:
-        lines.append(warning)
-    return "\n".join(lines)
+        fields.append({"name": "Library note", "value": warning[:1024], "inline": False})
+    embed = {
+        "title": "New Plex Request",
+        "description": f"**{title}**" + (f"\n\n{overview[:500]}" if overview else ""),
+        "color": 0xE5A00D,
+        "fields": fields,
+        "footer": {"text": "Plex Requester • Request received"},
+    }
+    if tmdb_url:
+        embed["url"] = tmdb_url
+    poster_url = tmdb_poster_url_for_item(item)
+    if poster_url:
+        embed["thumbnail"] = {"url": poster_url}
+    return embed
 
 
-def discord_fulfillment_message(item, fulfillment, discord_user_id=""):
+def discord_fulfillment_detail(item, fulfillment):
     quality = str(item.get("quality") or "1080p").strip()
     detail = str(fulfillment.get("message") or "").strip()
     if detail.startswith("Fulfilled:"):
@@ -1599,16 +1628,40 @@ def discord_fulfillment_message(item, fulfillment, discord_user_id=""):
         quality_line = detail
     elif detail:
         quality_line = f"{quality} - {detail}"
-    if not quality_line.endswith("."):
-        quality_line += "."
-    lines = [
-        f"Request fulfilled: {request_display_title(item)}",
-        f"Requester: {item.get('requester') or 'Unknown'}",
-        f"Quality: {quality_line}",
-    ]
-    if discord_user_id:
-        lines.append(f"Notify: <@{validate_discord_user_id(discord_user_id)}>")
-    return "\n".join(lines)
+    return quality_line.rstrip(".")
+
+
+def discord_fulfillment_embed(item, fulfillment):
+    tmdb_url = tmdb_url_for_item(item)
+    embed = {
+        "title": "Now Available on Plex",
+        "description": f"**{request_display_title(item)[:300]}**",
+        "color": 0x57F287,
+        "fields": [
+            {
+                "name": "Requester",
+                "value": str(item.get("requester") or "Unknown")[:1024],
+                "inline": True,
+            },
+            {
+                "name": "Requested quality",
+                "value": str(item.get("quality") or "1080p")[:1024],
+                "inline": True,
+            },
+            {
+                "name": "Plex media details",
+                "value": discord_fulfillment_detail(item, fulfillment)[:1024],
+                "inline": False,
+            },
+        ],
+        "footer": {"text": "Plex Requester • Ready to watch"},
+    }
+    if tmdb_url:
+        embed["url"] = tmdb_url
+    poster_url = tmdb_poster_url_for_item(item)
+    if poster_url:
+        embed["thumbnail"] = {"url": poster_url}
+    return embed
 
 
 def discord_waiting_time(item, now=None):
@@ -1682,8 +1735,13 @@ def send_discord_webhook(url, content="", allowed_user_id="", embeds=None):
     return True
 
 
-def send_discord_message(config, content, allowed_user_id=""):
-    return send_discord_webhook(discord_webhook_url(config), content, allowed_user_id)
+def send_discord_message(config, content="", allowed_user_id="", embeds=None):
+    return send_discord_webhook(
+        discord_webhook_url(config),
+        content,
+        allowed_user_id,
+        embeds,
+    )
 
 
 def notify_request_created(config, item):
@@ -1691,8 +1749,10 @@ def notify_request_created(config, item):
         discord_user_id = discord_user_id_for_requester(config, item.get("requester"))
         send_discord_message(
             config,
-            discord_request_message(item, discord_user_id),
+            f"<@{validate_discord_user_id(discord_user_id)}> your request has been received."
+            if discord_user_id else "",
             discord_user_id,
+            [discord_request_embed(item)],
         )
     except Exception as exc:
         print(f"Could not send Discord notification: {exc}", flush=True)
@@ -1703,8 +1763,10 @@ def notify_request_fulfilled(config, item, fulfillment):
         discord_user_id = discord_user_id_for_requester(config, item.get("requester"))
         return send_discord_message(
             config,
-            discord_fulfillment_message(item, fulfillment, discord_user_id),
+            f"<@{validate_discord_user_id(discord_user_id)}> your request is now available on Plex."
+            if discord_user_id else "",
             discord_user_id,
+            [discord_fulfillment_embed(item, fulfillment)],
         )
     except Exception as exc:
         print(f"Could not send Discord fulfillment notification: {exc}", flush=True)
