@@ -212,7 +212,8 @@ function syncDirectorySelect() {
   destinationDirectory.innerHTML = "";
   directories.forEach((directory) => {
     const usage = directory.usagePercent == null ? "usage unavailable" : `${directory.usagePercent}% full`;
-    const option = new Option(`${directory.label} — ${usage}`, String(directory.index));
+    const free = formatFreeGigabytes(directory.freeBytes);
+    const option = new Option(`${directory.label} — ${usage}${free ? ` · ${free}` : ""}`, String(directory.index));
     option.selected = Boolean(directory.default);
     destinationDirectory.append(option);
   });
@@ -324,6 +325,29 @@ async function loadSubfolders(destinationId, parentPath) {
   if (!response.ok) return [];
   const result = await response.json();
   return result.subfolders || [];
+}
+
+async function findDestinationParentFolder(destinationId, parentFolder) {
+  const params = new URLSearchParams({
+    destinationId,
+    name: parentFolder,
+  });
+  const response = await fetch(`/api/subfolders/parent-match?${params}`);
+  if (!response.ok) return null;
+  const result = await response.json();
+  return result.match || null;
+}
+
+function selectExistingParentFolder(parentFolder) {
+  const select = folderLevels.querySelector("select[data-level='0']");
+  if (!select) return false;
+  const option = Array.from(select.options).find(
+    (item) => item.value.toLocaleLowerCase() === parentFolder.toLocaleLowerCase(),
+  );
+  if (!option) return false;
+  select.value = option.value;
+  removeDeeperLevels(0);
+  return true;
 }
 
 function addNewFolderInput(value = "") {
@@ -1076,7 +1100,7 @@ async function loadAdminConfig() {
 }
 
 function renderConfig(config) {
-  configAppVersion.value = config.app?.version || "v8.3";
+  configAppVersion.value = config.app?.version || "v8.6";
   configQbitUrl.value = config.qbittorrent?.url || "";
   configPlexPath.value = config.plex?.databasePath || "";
   configDiscordWebhook.value = config.discordWebhookUrl || "";
@@ -1290,27 +1314,34 @@ async function useTmdbDownloadName(item) {
       : id.includes("film") || id.includes("movie") || label.includes("film") || label.includes("movie");
   });
 
-  let topLevelFolders = [];
+  const parentFolder = item.type === "tv" ? item.folderName : "";
+  let parentMatch = null;
   if (destination) {
     const radio = Array.from(document.querySelectorAll("[name='destinationId']"))
       .find((input) => input.value === destination.id);
     if (radio) {
       radio.checked = true;
-      topLevelFolders = await syncFolderSelect();
+      syncDirectorySelect();
+      if (item.type === "tv") {
+        parentMatch = await findDestinationParentFolder(destination.id, parentFolder);
+        if (parentMatch) {
+          destinationDirectory.value = String(parentMatch.pathIndex);
+        }
+      }
+      await syncFolderSelect();
     }
   }
 
   downloadName.value = tmdbDownloadName(item);
   if (item.type === "tv") {
-    const parentFolder = item.folderName;
-    const existingParent = topLevelFolders.some((folder) => folder.toLocaleLowerCase() === parentFolder.toLocaleLowerCase());
-    useSubfolder.checked = true;
     newFolderList.innerHTML = "";
-    addNewFolderInput(parentFolder);
+    const existingParentSelected = Boolean(parentMatch && selectExistingParentFolder(parentMatch.folder));
+    useSubfolder.checked = !existingParentSelected;
+    if (!existingParentSelected) addNewFolderInput(parentFolder);
     syncSubfolderField();
     showTmdbMessage(
-      existingParent
-        ? `Existing parent folder found. Download will use ${parentFolder}.`
+      parentMatch
+        ? `Existing parent folder selected on ${parentMatch.directory}: ${parentMatch.folder}.`
         : `Parent folder ${parentFolder} will be created for this download.`,
       "success",
     );
@@ -1599,6 +1630,14 @@ function formatBytes(value) {
     index += 1;
   }
   return `${size.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
+function formatFreeGigabytes(value) {
+  if (value === null || value === undefined) return "";
+  const gigabytes = Number(value) / (1024 ** 3);
+  if (!Number.isFinite(gigabytes) || gigabytes < 0) return "";
+  const maximumFractionDigits = gigabytes < 10 ? 1 : 0;
+  return `${gigabytes.toLocaleString(undefined, { maximumFractionDigits })} GB free`;
 }
 
 function formatSpeed(value) {

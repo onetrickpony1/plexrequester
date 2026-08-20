@@ -2,11 +2,11 @@
 
 Plex Requester is a lightweight, self-hosted web app for collecting movie and TV requests and sending magnet links or `.torrent` files to qBittorrent. It includes TMDb lookup, Plex library checks, request fulfillment tracking, configurable download destinations, Discord notifications, and a qBittorrent monitoring dashboard.
 
-The current default version label is **v8.3**. Administrators can edit the label from the Config tab; it is displayed beside the Plex Requester title for all users and cached locally to prevent a stale-version flash during refresh. Versions increment only when project documents, source code, or documentation are edited.
+The current default version label is **v8.6**. Administrators can edit the label from the Config tab; it is displayed beside the Plex Requester title for all users and cached locally to prevent a stale-version flash during refresh. Versions increment only when project documents, source code, or documentation are edited.
 
 For portable project context, coding preferences, compatibility rules, and a future-release checklist, see [CODEX_HANDOFF.md](CODEX_HANDOFF.md).
 
-The backend uses only the Python standard library. The frontend is plain HTML, CSS, and JavaScript, so there is no package installation or build step.
+The backend uses only the Python standard library. Its focused modules live under `plex_requester/`; `server.py` remains the small compatibility facade and executable entry point, so existing commands and integrations continue to work. The frontend is plain HTML, CSS, and JavaScript, so there is no package installation or build step.
 
 ## Features
 
@@ -36,6 +36,7 @@ The backend uses only the Python standard library. The frontend is plain HTML, C
 - Choose from preset movie, TV, or custom download destinations.
 - Configure multiple directories within a movie or TV destination and choose the exact directory when adding a download.
 - Automatically prefer the fullest configured directory below 90% usage, moving to the next fullest eligible directory as drives fill.
+- When adding a TV season, automatically scan every configured TV directory and prefer the drive containing that show's existing parent folder.
 - Browse existing nested folders for configured destinations.
 - Create multiple new folder levels before adding a download.
 - Generate Plex-friendly names from TMDb, including season names such as `The Office (2005) S01`.
@@ -208,7 +209,9 @@ or escape every backslash:
 
 The web Config tab lets an administrator change the qBittorrent URL, Plex database path, destinations, and both Discord webhooks. Other credentials, API keys, and the admin PIN should be managed in `config.json`, with environment variables, or through the Windows launcher where supported.
 
-When a destination contains multiple paths, the Download tab shows a compact directory selector. Its default is the directory with the highest drive usage below 90%. Once that drive reaches 90%, the next fullest directory below 90% becomes the default. If every drive is at least 90% full, the least-full available drive is selected as a safe fallback. The chosen index is validated against the configured list by the server; arbitrary paths are not accepted from the browser.
+When a destination contains multiple paths, the Download tab shows a compact directory selector with both the percentage used and remaining free space in GB. Its default is the directory with the highest drive usage below 90%. Once that drive reaches 90%, the next fullest directory below 90% becomes the default. If every drive is at least 90% full, the least-full available drive is selected as a safe fallback. The chosen index is validated against the configured list by the server; arbitrary paths are not accepted from the browser.
+
+When an administrator selects a TMDb TV result for a season, Plex Requester scans the top level of every configured TV path for an exact, case-insensitive match to the show's Plex-style parent folder (for example, `The Office (2005)`). If found, that directory and existing folder are selected automatically, overriding the drive-usage default so the new season stays with the show. If no exact parent exists, the normal drive-fullness rule remains in effect and the parent folder is suggested for creation.
 
 ## Environment variables
 
@@ -284,7 +287,7 @@ Plex Requester does not write to this database. For each operation, it:
 3. Queries the snapshot.
 4. Deletes the snapshot.
 
-The fulfillment monitor checks pending TMDb-backed requests after startup and then every 15 seconds by default. A title remains pending after first appearing in Plex until every discovered media item has bitrate, resolution, and video-codec metadata. Once analysis is complete, fulfillment details include the movie bitrate or, for TV, the average bitrate across the discovered episodes.
+The fulfillment monitor checks pending TMDb-backed requests after startup and then every 15 seconds by default. A title remains pending after first appearing in Plex until every discovered media item has bitrate, resolution, and video-codec metadata. Once analysis is complete, fulfillment details include the movie bitrate or, for TV, the average bitrate across the discovered episodes. Plex media-stream bitrate values are normalized from bits per second before Mbps display and REMUX classification.
 
 ## Discord notifications
 
@@ -431,7 +434,17 @@ Current qBittorrent versions may return a JSON success object rather than the ol
 
 ```text
 Plex Requester/
-├── server.py                    Python HTTP server and integrations
+├── server.py                    Compatibility facade and executable entry point
+├── plex_requester/
+│   ├── api.py                   HTTP routes and threaded server
+│   ├── auth.py                  PIN, session, and cookie handling
+│   ├── config.py                Configuration defaults and validation
+│   ├── discord.py               Webhook formatting, queueing, and delivery
+│   ├── plex.py                  Plex snapshots, search, and media analysis
+│   ├── qbittorrent.py           qBittorrent API and torrent handling
+│   ├── requests.py              Request and fulfillment workflows
+│   ├── storage.py               Atomic persistence and destination storage
+│   └── tmdb.py                  TMDb lookup and media naming
 ├── check_config.py              Configuration validator
 ├── test_server.py               Backend and compatibility unit tests
 ├── config.example.json          Configuration template

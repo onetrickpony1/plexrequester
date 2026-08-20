@@ -7,6 +7,16 @@ import unittest
 from unittest import mock
 
 import server
+from plex_requester import api, config, qbittorrent, storage
+
+
+class BackendModuleStructureTests(unittest.TestCase):
+    def test_server_remains_compatible_with_focused_modules(self):
+        self.assertIs(server.AppHandler, api.AppHandler)
+        self.assertIs(server.QbittorrentClient, qbittorrent.QbittorrentClient)
+        self.assertEqual(server.atomic_write_json.__module__, "server")
+        self.assertEqual(config.DEFAULT_APP_VERSION, "v8.6")
+        self.assertEqual(server.USER_DATA_FILES, storage.USER_DATA_FILES)
 
 
 class ServerPortConfigTests(unittest.TestCase):
@@ -106,7 +116,7 @@ class UserDataStorageTests(unittest.TestCase):
 
     def test_all_json_stores_use_atomic_writer(self):
         config_path = self.data_dir / "config.json"
-        config = {"_save_config_path": str(config_path), "app": {"version": "v8.3"}}
+        config = {"_save_config_path": str(config_path), "app": {"version": "v8.6"}}
         with mock.patch.object(server, "atomic_write_json") as atomic_write:
             server.save_requests([{"id": "one"}])
             server.save_fulfillment_state({"one": {"lastState": "open"}})
@@ -128,7 +138,7 @@ class UserDataStorageTests(unittest.TestCase):
 
 
 class AppVersionConfigTests(unittest.TestCase):
-    def payload(self, version="v8.3"):
+    def payload(self, version="v8.6"):
         return {
             "app": {"version": version},
             "qbittorrent": {"url": "http://localhost:8080"},
@@ -180,6 +190,13 @@ class MultiDirectoryDestinationTests(unittest.TestCase):
             choices = server.destination_directory_choices(destination)
         self.assertEqual(next(choice["index"] for choice in choices if choice["default"]), 0)
 
+    def test_directory_choices_include_free_bytes(self):
+        destination = {"paths": ["G:/Movies"]}
+        usage = self.usage(75)
+        with mock.patch.object(server, "disk_usage_for_path", return_value=usage):
+            choices = server.destination_directory_choices(destination)
+        self.assertEqual(choices[0]["freeBytes"], usage["free"])
+
     def test_next_fullest_directory_is_used_after_ninety_percent(self):
         destination = {"paths": ["G:/Movies", "F:/Movies", "H:/Movies"]}
         usages = [self.usage(91), self.usage(70), self.usage(95)]
@@ -194,6 +211,46 @@ class MultiDirectoryDestinationTests(unittest.TestCase):
             choices = server.destination_directory_choices(destination)
         self.assertEqual(next(choice["index"] for choice in choices if choice["default"]), 0)
 
+    def test_existing_tv_parent_overrides_fullness_default(self):
+        with tempfile.TemporaryDirectory() as root:
+            first = Path(root) / "fullest"
+            second = Path(root) / "existing-show"
+            first.mkdir()
+            second.mkdir()
+            existing = second / "The Office (2005)"
+            existing.mkdir()
+            destination = {
+                "id": "tv_shows",
+                "paths": [str(first), str(second)],
+                "browseSubfolders": True,
+            }
+
+            with mock.patch.object(
+                server,
+                "disk_usage_for_path",
+                side_effect=[self.usage(89), self.usage(50)],
+            ):
+                choices = server.destination_directory_choices(destination)
+
+            self.assertEqual(next(choice["index"] for choice in choices if choice["default"]), 0)
+            self.assertEqual(
+                server.find_destination_parent_folder(destination, "the office (2005)"),
+                {
+                    "pathIndex": 1,
+                    "directory": str(second),
+                    "folder": "The Office (2005)",
+                },
+            )
+
+    def test_tv_parent_match_requires_an_exact_top_level_folder(self):
+        with tempfile.TemporaryDirectory() as root:
+            base = Path(root) / "tv"
+            base.mkdir()
+            (base / "The Office (2005) Extras").mkdir()
+            destination = {"paths": [str(base)]}
+
+            self.assertIsNone(server.find_destination_parent_folder(destination, "The Office (2005)"))
+
     def test_selected_directory_index_is_validated(self):
         destination = {"paths": ["G:/Movies", "F:/Movies"]}
         self.assertEqual(server.destination_base_path(destination, "1"), "F:/Movies")
@@ -203,7 +260,7 @@ class MultiDirectoryDestinationTests(unittest.TestCase):
     def test_admin_config_saves_multiple_paths_and_legacy_first_path(self):
         config = {"notifications": {}}
         payload = {
-            "app": {"version": "v8.3"},
+            "app": {"version": "v8.6"},
             "qbittorrent": {"url": "http://localhost:8080"},
             "plex": {"databasePath": ""},
             "discordUserMappings": [],
@@ -918,6 +975,29 @@ class RequestRefreshPerformanceTests(unittest.TestCase):
     def test_movie_summary_reports_mbps(self):
         media = [{"id": 1, "bitrate": 12500, "width": 1920, "height": 1080, "video_codec": "h264"}]
         self.assertEqual(server.media_quality_summary(media, []), "1080p - 12.5 Mbps - H264")
+
+    def test_stream_bitrate_bits_are_normalized_before_summary_and_classification(self):
+        media = [{"id": 1, "bitrate": 13854, "width": 1920, "height": 1080}]
+        streams = [{
+            "media_item_id": 1,
+            "stream_type": 1,
+            "bitrate": 13853500,
+            "codec": "av1",
+        }]
+        self.assertEqual(server.media_bitrate(media[0], streams), 13854)
+        self.assertNotIn("REMUX", server.classify_media_quality(media, streams))
+        self.assertEqual(server.media_quality_summary(media, streams), "1080p - 13.9 Mbps - AV1")
+
+    def test_genuine_high_bitrate_media_is_still_classified_as_remux(self):
+        media = [{"id": 1, "bitrate": 45000, "width": 1920, "height": 1080}]
+        streams = [{
+            "media_item_id": 1,
+            "stream_type": 1,
+            "bitrate": 44950000,
+            "codec": "h264",
+        }]
+        self.assertIn("REMUX", server.classify_media_quality(media, streams))
+        self.assertEqual(server.media_quality_summary(media, streams), "REMUX - 45 Mbps - H264")
 
     def test_tv_summary_reports_average_episode_mbps(self):
         media = [

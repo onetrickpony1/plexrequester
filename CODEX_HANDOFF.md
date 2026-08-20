@@ -41,7 +41,7 @@ AppData backward compatibility is a standing priority for every update.
 
 Plex Requester is a lightweight self-hosted web application that lets users request movies and TV shows, check the Plex library, and submit magnet links or `.torrent` files to qBittorrent. It includes TMDb lookup, fulfillment tracking, Discord notifications, storage and rename tools, and role-specific qBittorrent monitoring.
 
-The backend uses Python's standard library. The frontend uses plain HTML, CSS, and JavaScript. A C# Windows launcher provides the backend GUI and starts the Python server.
+The backend uses Python's standard library and is split into focused modules under `plex_requester/`. Keep `server.py` as the stable compatibility facade and executable entry point because tests, launch scripts, and existing integrations import it directly. The frontend uses plain HTML, CSS, and JavaScript. A C# Windows launcher provides the backend GUI and starts the Python server.
 
 ## Roles and intended access
 
@@ -71,9 +71,9 @@ Admins can add downloads using either magnet links or `.torrent` files.
 - Requests can be TMDb-backed or free-form and can specify quality.
 - Avoid slow page refreshes caused by synchronous Plex scans. Serve cached request/fulfillment state quickly and perform expensive reconciliation in the background.
 - The visible request list should refresh promptly; current behavior targets a five-second refresh interval.
-- Do not mark a detected Plex item fulfilled or send its Discord fulfillment notification until Plex has populated bitrate, resolution, and video-codec metadata for every discovered media item. Include movie Mbps or average TV-episode Mbps in the completed analysis, and poll promptly without blocking page refreshes.
-- When a TV result such as `American Vandal (2017)` is selected with season 2, scan the configured TV shows destination for the presumed parent folder.
-- Precheck **Add subfolder** and fill it with the exact show parent name whether that parent already exists or needs to be created. If it exists, write into that same parent folder.
+- Do not mark a detected Plex item fulfilled or send its Discord fulfillment notification until Plex has populated bitrate, resolution, and video-codec metadata for every discovered media item. Normalize `media_streams.bitrate` from bits per second to kbps before comparing it with `media_items.bitrate`, displaying Mbps, or applying the REMUX threshold. Include movie Mbps or average TV-episode Mbps in the completed analysis, and poll promptly without blocking page refreshes.
+- When a TV result such as `American Vandal (2017)` is selected with season 2, scan every configured TV shows base path for an exact, case-insensitive top-level match to the presumed parent folder.
+- If the parent exists, select that base path and existing folder, overriding the drive-fullness default. If it does not exist, use the fullness-selected path and precheck **Create new folders** with the exact show parent name.
 - Keep the user in control: they can edit the suggested folder name or uncheck the option.
 - Movie and TV destinations can contain multiple base paths while retaining the legacy single `path`. When multiple paths exist, show an admin download-directory selector and default to the fullest drive below 90% usage; after it reaches 90%, use the next fullest eligible drive. Validate the selected configured-path index on the server.
 - The actual download/request name can remain season-specific; the suggested parent folder is show-specific.
