@@ -41,13 +41,27 @@ def stream_bitrate_kbps(value):
     return round(bits_per_second / 1000) if bits_per_second else 0
 
 
+def media_item_bitrate_kbps(value, stream_bitrate=0):
+    """Normalize media_items.bitrate, which Plex stores in either bps or kbps."""
+    raw_bitrate = int_value(value)
+    if not raw_bitrate:
+        return 0
+
+    normalized_stream_bitrate = int_value(stream_bitrate)
+    if raw_bitrate >= 1_000_000 or (
+        normalized_stream_bitrate and raw_bitrate >= normalized_stream_bitrate * 100
+    ):
+        return round(raw_bitrate / 1000)
+    return raw_bitrate
+
+
 def media_bitrate(item, stream_rows):
-    bitrate = int_value(item.get("bitrate"))
     media_id = item.get("id")
+    stream_bitrate = 0
     for stream in stream_rows:
         if str(stream.get("media_item_id")) == str(media_id):
-            bitrate = max(bitrate, stream_bitrate_kbps(stream.get("bitrate")))
-    return bitrate
+            stream_bitrate = max(stream_bitrate, stream_bitrate_kbps(stream.get("bitrate")))
+    return max(media_item_bitrate_kbps(item.get("bitrate"), stream_bitrate), stream_bitrate)
 
 
 def video_stream_for_media(item, stream_rows):
@@ -737,4 +751,3 @@ def plex_item_details(database_path, item_id):
             snapshot_path.unlink(missing_ok=True)
         except OSError:
             pass
-

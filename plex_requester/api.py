@@ -355,10 +355,29 @@ class AppHandler(BaseHTTPRequestHandler):
 
     def auth_login(self):
         try:
+            rate_limit_key = login_rate_limit_key(
+                self.client_address[0],
+                self.headers.get("Cf-Access-Authenticated-User-Email", ""),
+            )
+            retry_after = login_retry_after(rate_limit_key)
+            if retry_after:
+                return self.send_json(
+                    {"error": "Too many failed login attempts. Try again later."},
+                    HTTPStatus.TOO_MANY_REQUESTS,
+                    headers=[("Retry-After", str(retry_after))],
+                )
             payload = self.read_json_body()
             role = role_from_pin(self.server.config, payload.get("pin"))
             if not role:
+                retry_after = record_failed_login(rate_limit_key)
+                if retry_after:
+                    return self.send_json(
+                        {"error": "Too many failed login attempts. Try again later."},
+                        HTTPStatus.TOO_MANY_REQUESTS,
+                        headers=[("Retry-After", str(retry_after))],
+                    )
                 return self.send_json({"error": "Wrong PIN."}, HTTPStatus.UNAUTHORIZED)
+            clear_failed_logins(rate_limit_key)
             token = create_auth_session(role)
             self.send_json(
                 {
@@ -527,6 +546,7 @@ class AppHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
@@ -535,6 +555,7 @@ class AppHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
         for name, value in headers or []:
             self.send_header(name, value)
         self.end_headers()

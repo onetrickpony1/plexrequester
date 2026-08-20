@@ -22,6 +22,14 @@ except json.JSONDecodeError as exc:
     sys.exit(1)
 
 errors = []
+admin_pin = str(config.get("adminPin", "")).strip()
+if admin_pin.casefold() == "change-this-pin":
+    errors.append("adminPin still contains the insecure example value")
+elif len(admin_pin) < 8:
+    errors.append("adminPin must contain at least 8 characters")
+elif len(admin_pin) > 128:
+    errors.append("adminPin must contain no more than 128 characters")
+
 qbit = config.get("qbittorrent", {})
 if not qbit.get("url"):
     errors.append("qbittorrent.url is missing")

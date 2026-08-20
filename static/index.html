@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Plex Requester</title>
-    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/static/styles.css?v=9.1">
   </head>
   <body>
     <main class="shell">
@@ -233,7 +233,7 @@
         <section class="tab-panel" id="configPanel" role="tabpanel" aria-labelledby="configTabButton" hidden>
           <form class="config-form" id="configForm" autocomplete="off">
             <label for="configAppVersion">App version</label>
-            <input id="configAppVersion" type="text" maxlength="32" required placeholder="v8.7">
+            <input id="configAppVersion" type="text" maxlength="32" required placeholder="v9.1">
 
             <label for="configQbitUrl">qBittorrent URL</label>
             <input id="configQbitUrl" type="text">
@@ -241,9 +241,13 @@
             <label for="configPlexPath">Plex DB path</label>
             <input id="configPlexPath" type="text">
 
-            <label for="configDiscordWebhook">Request and fulfillment Discord webhook</label>
+            <label for="configDiscordWebhook">Request and fulfillment Discord webhook 1</label>
             <input id="configDiscordWebhook" type="password" autocomplete="new-password" placeholder="https://discord.com/api/webhooks/…">
-            <p class="field-note">Sends new-request and Plex-fulfillment notifications to this webhook's channel.</p>
+            <p class="field-note">Sends new-request and Plex-fulfillment notifications to the first Discord server.</p>
+
+            <label for="configSecondaryDiscordWebhook">Request and fulfillment Discord webhook 2 (optional)</label>
+            <input id="configSecondaryDiscordWebhook" type="password" autocomplete="new-password" placeholder="https://discord.com/api/webhooks/…">
+            <p class="field-note">Sends the same request and fulfillment notifications to a second Discord server.</p>
 
             <label for="configAdminReminderWebhook">Admin reminder Discord webhook</label>
             <input id="configAdminReminderWebhook" type="password" autocomplete="new-password" placeholder="https://discord.com/api/webhooks/…">
@@ -276,6 +280,6 @@
       </section>
     </main>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=9.1"></script>
   </body>
 </html>

@@ -60,6 +60,7 @@ const configAppVersion = document.querySelector("#configAppVersion");
 const configQbitUrl = document.querySelector("#configQbitUrl");
 const configPlexPath = document.querySelector("#configPlexPath");
 const configDiscordWebhook = document.querySelector("#configDiscordWebhook");
+const configSecondaryDiscordWebhook = document.querySelector("#configSecondaryDiscordWebhook");
 const configAdminReminderWebhook = document.querySelector("#configAdminReminderWebhook");
 const configAdminReminderInterval = document.querySelector("#configAdminReminderInterval");
 const configDestinations = document.querySelector("#configDestinations");
@@ -1100,10 +1101,11 @@ async function loadAdminConfig() {
 }
 
 function renderConfig(config) {
-  configAppVersion.value = config.app?.version || "v8.7";
+  configAppVersion.value = config.app?.version || "v9.1";
   configQbitUrl.value = config.qbittorrent?.url || "";
   configPlexPath.value = config.plex?.databasePath || "";
   configDiscordWebhook.value = config.discordWebhookUrl || "";
+  configSecondaryDiscordWebhook.value = config.secondaryDiscordWebhookUrl || "";
   configAdminReminderWebhook.value = config.adminReminderWebhookUrl || "";
   configAdminReminderInterval.value = config.adminReminderIntervalMinutes || 60;
   configDestinations.innerHTML = "";
@@ -1193,6 +1195,7 @@ function collectConfig() {
     },
     discordUserMappings: collectDiscordUserMappings(),
     discordWebhookUrl: configDiscordWebhook.value.trim(),
+    secondaryDiscordWebhookUrl: configSecondaryDiscordWebhook.value.trim(),
     adminReminderWebhookUrl: configAdminReminderWebhook.value.trim(),
     adminReminderIntervalMinutes: Number(configAdminReminderInterval.value),
     destinations: Array.from(configDestinations.querySelectorAll(".config-destination")).map((row) => ({

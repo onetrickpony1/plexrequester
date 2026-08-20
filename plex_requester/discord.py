@@ -27,6 +27,10 @@ def discord_webhook_url(config):
     return str(config.get("notifications", {}).get("discordWebhookUrl", "")).strip()
 
 
+def secondary_discord_webhook_url(config):
+    return str(config.get("notifications", {}).get("secondaryDiscordWebhookUrl", "")).strip()
+
+
 def admin_reminder_webhook_url(config):
     return str(config.get("notifications", {}).get("adminReminderWebhookUrl", "")).strip()
 
@@ -69,7 +73,7 @@ def validate_discord_webhook_url(value):
     parsed = parse.urlparse(url)
     allowed_hosts = {"discord.com", "discordapp.com", "canary.discord.com", "ptb.discord.com"}
     if parsed.scheme != "https" or parsed.hostname not in allowed_hosts or "/api/webhooks/" not in parsed.path:
-        raise ValueError("Admin reminder webhook must be a valid HTTPS Discord webhook URL.")
+        raise ValueError("Discord webhook must be a valid HTTPS Discord webhook URL.")
     return url
 
 
@@ -394,6 +398,8 @@ def send_discord_webhook(url, content="", allowed_user_id="", embeds=None):
 def notification_target_url(config, target):
     if target == "primary":
         return discord_webhook_url(config)
+    if target == "primary-secondary":
+        return secondary_discord_webhook_url(config)
     if target == "admin-reminder":
         return admin_reminder_webhook_url(config)
     return ""
@@ -530,12 +536,40 @@ def request_notification_identity(item):
     return notification_job_id(json.dumps(fallback, sort_keys=True))
 
 
+def queue_request_notifications(
+    config,
+    idempotency_key,
+    content="",
+    allowed_user_id="",
+    embeds=None,
+):
+    targets = []
+    if discord_webhook_url(config):
+        targets.append(("primary", ""))
+    if secondary_discord_webhook_url(config):
+        targets.append(("primary-secondary", ":secondary"))
+    if not targets:
+        return False
+
+    queued = [
+        queue_discord_notification(
+            config,
+            target,
+            f"{idempotency_key}{key_suffix}",
+            content,
+            allowed_user_id,
+            embeds,
+        )
+        for target, key_suffix in targets
+    ]
+    return all(queued)
+
+
 def notify_request_created(config, item):
     try:
         discord_user_id = discord_user_id_for_requester(config, item.get("requester"))
-        return queue_discord_notification(
+        return queue_request_notifications(
             config,
-            "primary",
             f"request-created:{request_notification_identity(item)}",
             f"<@{validate_discord_user_id(discord_user_id)}> your request has been received."
             if discord_user_id else "",
@@ -549,9 +583,8 @@ def notify_request_created(config, item):
 def notify_request_fulfilled(config, item, fulfillment):
     try:
         discord_user_id = discord_user_id_for_requester(config, item.get("requester"))
-        return queue_discord_notification(
+        return queue_request_notifications(
             config,
-            "primary",
             f"request-fulfilled:{request_notification_identity(item)}",
             f"<@{validate_discord_user_id(discord_user_id)}> your request is now available on Plex."
             if discord_user_id else "",
@@ -646,6 +679,7 @@ notification_retry_delay = _live_backend_function(notification_retry_delay)
 prune_notification_outbox = _live_backend_function(prune_notification_outbox)
 process_notification_outbox = _live_backend_function(process_notification_outbox)
 queue_discord_notification = _live_backend_function(queue_discord_notification)
+queue_request_notifications = _live_backend_function(queue_request_notifications)
 request_notification_identity = _live_backend_function(request_notification_identity)
 notify_request_created = _live_backend_function(notify_request_created)
 notify_request_fulfilled = _live_backend_function(notify_request_fulfilled)

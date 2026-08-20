@@ -15,13 +15,16 @@ public class PlexRequesterLauncher : Form
     private readonly TextBox logBox;
     private readonly ListView historyList;
     private readonly TextBox tmdbKeyBox;
+    private readonly TextBox adminPinBox;
     private readonly Label serverPortLabel;
     private readonly NumericUpDown serverPortBox;
     private readonly Label statusLabel;
     private readonly Label tmdbKeyStatus;
+    private readonly Label adminPinStatus;
     private readonly Button openButton;
     private readonly Button stopButton;
     private readonly Button saveTmdbKeyButton;
+    private readonly Button saveAdminPinButton;
     private readonly Button saveServerPortButton;
     private readonly Button refreshHistoryButton;
     private readonly Timer historyRefreshTimer;
@@ -136,12 +139,47 @@ public class PlexRequesterLauncher : Form
         saveTmdbKeyButton.Location = new Point(ClientSize.Width - 148, 119);
         saveTmdbKeyButton.Click += delegate { SaveTmdbKey(); };
 
+        adminPinStatus = new Label
+        {
+            Text = "Administrator PIN: checking config...",
+            AutoSize = true,
+            Font = new Font("Segoe UI", 9, FontStyle.Bold),
+            Location = new Point(22, 164),
+            ForeColor = Color.FromArgb(157, 175, 183)
+        };
+
+        adminPinBox = new TextBox
+        {
+            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+            BackColor = Color.FromArgb(11, 17, 23),
+            BorderStyle = BorderStyle.FixedSingle,
+            ForeColor = Color.FromArgb(238, 245, 248),
+            Font = new Font("Segoe UI", 10, FontStyle.Regular),
+            Location = new Point(22, 188),
+            MaxLength = 128,
+            PasswordChar = '*',
+            Size = new Size(ClientSize.Width - 190, 28)
+        };
+        adminPinBox.KeyDown += delegate(object sender, KeyEventArgs args)
+        {
+            if (args.KeyCode == Keys.Enter)
+            {
+                args.SuppressKeyPress = true;
+                SaveAdminPin();
+            }
+        };
+
+        saveAdminPinButton = CreateButton("Save Admin PIN");
+        saveAdminPinButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        saveAdminPinButton.Location = new Point(ClientSize.Width - 148, 183);
+        saveAdminPinButton.Click += delegate { SaveAdminPin(); };
+
         serverPortLabel = new Label
         {
             Text = "Server / Tailscale port",
             AutoSize = true,
             Font = new Font("Segoe UI", 9, FontStyle.Bold),
-            Location = new Point(22, 164),
+            Location = new Point(22, 228),
             ForeColor = Color.FromArgb(157, 175, 183)
         };
 
@@ -151,7 +189,7 @@ public class PlexRequesterLauncher : Form
             BorderStyle = BorderStyle.FixedSingle,
             ForeColor = Color.FromArgb(238, 245, 248),
             Font = new Font("Segoe UI", 10, FontStyle.Regular),
-            Location = new Point(188, 158),
+            Location = new Point(188, 222),
             Minimum = 1,
             Maximum = 65535,
             Size = new Size(110, 28),
@@ -168,14 +206,14 @@ public class PlexRequesterLauncher : Form
 
         saveServerPortButton = CreateButton("Save Port");
         saveServerPortButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        saveServerPortButton.Location = new Point(ClientSize.Width - 148, 153);
+        saveServerPortButton.Location = new Point(ClientSize.Width - 148, 217);
         saveServerPortButton.Click += delegate { SaveServerPort(); };
 
         mainTabs = new TabControl
         {
             Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
-            Location = new Point(22, 204),
-            Size = new Size(ClientSize.Width - 44, ClientSize.Height - 226),
+            Location = new Point(22, 268),
+            Size = new Size(ClientSize.Width - 44, ClientSize.Height - 290),
             Font = new Font("Segoe UI", 9, FontStyle.Bold)
         };
 
@@ -242,6 +280,9 @@ public class PlexRequesterLauncher : Form
         Controls.Add(tmdbKeyStatus);
         Controls.Add(tmdbKeyBox);
         Controls.Add(saveTmdbKeyButton);
+        Controls.Add(adminPinStatus);
+        Controls.Add(adminPinBox);
+        Controls.Add(saveAdminPinButton);
         Controls.Add(serverPortLabel);
         Controls.Add(serverPortBox);
         Controls.Add(saveServerPortButton);
@@ -257,6 +298,7 @@ public class PlexRequesterLauncher : Form
         Load += delegate
         {
             UpdateTmdbKeyStatus();
+            UpdateAdminPinStatus();
             LoadRenameHistory();
             historyRefreshTimer.Start();
             StartServer();
@@ -288,8 +330,10 @@ public class PlexRequesterLauncher : Form
         stopButton.Location = new Point(ClientSize.Width - 148, 24);
         tmdbKeyBox.Size = new Size(ClientSize.Width - 190, 28);
         saveTmdbKeyButton.Location = new Point(ClientSize.Width - 148, 119);
-        saveServerPortButton.Location = new Point(ClientSize.Width - 148, 153);
-        mainTabs.Size = new Size(ClientSize.Width - 44, ClientSize.Height - 226);
+        adminPinBox.Size = new Size(ClientSize.Width - 190, 28);
+        saveAdminPinButton.Location = new Point(ClientSize.Width - 148, 183);
+        saveServerPortButton.Location = new Point(ClientSize.Width - 148, 217);
+        mainTabs.Size = new Size(ClientSize.Width - 44, ClientSize.Height - 290);
         if (mainTabs.TabPages.Count > 1)
         {
             LayoutHistoryTab(mainTabs.TabPages[1]);
@@ -643,6 +687,46 @@ public class PlexRequesterLauncher : Form
         }
     }
 
+    private void SaveAdminPin()
+    {
+        string pin = adminPinBox.Text.Trim();
+        if (pin.Length < 8 || pin.Length > 128 || String.Equals(pin, "change-this-pin", StringComparison.OrdinalIgnoreCase))
+        {
+            AppendLog("Administrator PIN must contain between 8 and 128 characters and cannot use the example value.");
+            return;
+        }
+
+        try
+        {
+            string configPath = Path.Combine(dataDir, "config.json");
+            string sourcePath = File.Exists(configPath) ? configPath : Path.Combine(appDir, "config.example.json");
+            var serializer = new JavaScriptSerializer();
+            serializer.MaxJsonLength = int.MaxValue;
+            Dictionary<string, object> config;
+
+            if (File.Exists(sourcePath))
+            {
+                config = serializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(sourcePath));
+            }
+            else
+            {
+                config = new Dictionary<string, object>();
+            }
+
+            config["adminPin"] = pin;
+            WriteAllTextAtomic(configPath, serializer.Serialize(config));
+            WriteAllTextAtomic(Path.Combine(dataDir, "auth-sessions.json"), "{}\r\n");
+            adminPinBox.Text = "";
+            UpdateAdminPinStatus();
+            AppendLog("Administrator PIN saved to config.json. Existing admin sessions were signed out.");
+            RestartServer();
+        }
+        catch (Exception ex)
+        {
+            AppendLog("Could not save administrator PIN: " + ex.Message);
+        }
+    }
+
     private void UpdateTmdbKeyStatus()
     {
         try
@@ -667,6 +751,30 @@ public class PlexRequesterLauncher : Form
         catch
         {
             tmdbKeyStatus.Text = "TMDb key: config could not be read";
+        }
+    }
+
+    private void UpdateAdminPinStatus()
+    {
+        try
+        {
+            string configPath = Path.Combine(dataDir, "config.json");
+            if (!File.Exists(configPath))
+            {
+                adminPinStatus.Text = "Administrator PIN: not configured";
+                return;
+            }
+
+            var serializer = new JavaScriptSerializer();
+            var config = serializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(configPath));
+            string pin = config.ContainsKey("adminPin") ? Convert.ToString(config["adminPin"]).Trim() : "";
+            adminPinStatus.Text = pin.Length >= 8 && pin.Length <= 128 && !String.Equals(pin, "change-this-pin", StringComparison.OrdinalIgnoreCase)
+                ? "Administrator PIN: configured"
+                : "Administrator PIN: not configured securely (minimum 8 characters)";
+        }
+        catch
+        {
+            adminPinStatus.Text = "Administrator PIN: config could not be read";
         }
     }
 

@@ -2,7 +2,7 @@
 
 Plex Requester is a lightweight, self-hosted web app for collecting movie and TV requests and sending magnet links or `.torrent` files to qBittorrent. It includes TMDb lookup, Plex library checks, request fulfillment tracking, configurable download destinations, Discord notifications, and a qBittorrent monitoring dashboard.
 
-The current default version label is **v8.7**. Administrators can edit the label from the Config tab; it is displayed beside the Plex Requester title for all users and cached locally to prevent a stale-version flash during refresh. Versions increment only when project documents, source code, or documentation are edited.
+The current default version label is **v9.1**. Administrators can edit the label from the Config tab; it is displayed beside the Plex Requester title for all users and cached locally to prevent a stale-version flash during refresh. Versions increment only when project documents, source code, or documentation are edited.
 
 Every Windows release build now runs Python syntax checks and the complete automated backend test suite before packaging. A failed check stops the build without replacing the existing release executable.
 
@@ -93,7 +93,7 @@ The standalone Windows executable includes the Python runtime, backend, configur
 
 Download `Plex Requester_vX.X.exe` from the GitHub release and run it from any writable location. No source checkout or Python installation is required. On first launch it creates `%LOCALAPPDATA%\Plex Requester\config.json` from the bundled safe template, then starts the management window and server. Existing AppData files are reused without being overwritten.
 
-Use the administrator Config tab or edit the AppData `config.json` to replace all placeholder credentials, the administrator PIN, qBittorrent connection details, and media destinations before exposing the service.
+Use the native backend window or edit the AppData `config.json` to replace the administrator PIN before exposing the service. The same window can save the TMDb key and server port; the administrator Config tab manages the supported qBittorrent, Plex, destination, and Discord settings.
 
 ### Running from source
 
@@ -136,7 +136,7 @@ http://<server-hostname-or-ip>:8003
 
 ## Configuration
 
-The default configuration path is `%LOCALAPPDATA%\Plex Requester\config.json`. A safe starting structure is:
+The default configuration path is `%LOCALAPPDATA%\Plex Requester\config.json`. A safe starting structure is shown below. The example `change-this-pin` value is deliberately rejected by the backend until it is replaced:
 
 ```json
 {
@@ -156,6 +156,7 @@ The default configuration path is `%LOCALAPPDATA%\Plex Requester\config.json`. A
   },
   "notifications": {
     "discordWebhookUrl": "",
+    "secondaryDiscordWebhookUrl": "",
     "adminReminderWebhookUrl": "",
     "adminReminderIntervalMinutes": 60,
     "discordUserMappings": {
@@ -209,7 +210,7 @@ or escape every backslash:
 "path": "D:\\Media\\Movies"
 ```
 
-The web Config tab lets an administrator change the qBittorrent URL, Plex database path, destinations, and both Discord webhooks. Other credentials, API keys, and the admin PIN should be managed in `config.json`, with environment variables, or through the Windows launcher where supported.
+The web Config tab lets an administrator change the qBittorrent URL, Plex database path, destinations, and Discord webhooks. Other credentials and API keys should be managed in `config.json`, with environment variables, or through the Windows launcher where supported. The Windows backend window includes an **Administrator PIN** field that writes `adminPin` to `%LOCALAPPDATA%\Plex Requester\config.json`, signs out existing admin sessions, and restarts the backend. PINs must contain 8 to 128 characters. The bundled example value and existing PINs shorter than eight characters cannot authenticate; replace them from the backend window after upgrading.
 
 When a destination contains multiple paths, the Download tab shows a compact directory selector with both the percentage used and remaining free space in GB. Its default is the directory with the highest drive usage below 90%. Once that drive reaches 90%, the next fullest directory below 90% becomes the default. If every drive is at least 90% full, the least-full available drive is selected as a safe fallback. The chosen index is validated against the configured list by the server; arbitrary paths are not accepted from the browser.
 
@@ -266,7 +267,7 @@ Administrators can additionally:
 - Mute or unmute Discord reminders for individual requests.
 - Edit supported configuration values.
 
-Admin sessions are stored in an HTTP-only cookie and expire after seven days. Use the Login button to enter the configured PIN.
+Admin sessions are stored in an HTTP-only cookie and expire after seven days. Use the Login button to enter the configured PIN. Five failed attempts by the same client or Cloudflare Access identity trigger a 15-minute lockout; a successful login clears earlier failures.
 
 ## TMDb setup
 
@@ -289,11 +290,13 @@ Plex Requester does not write to this database. For each operation, it:
 3. Queries the snapshot.
 4. Deletes the snapshot.
 
-The fulfillment monitor checks pending TMDb-backed requests after startup and then every 15 seconds by default. A title remains pending after first appearing in Plex until every discovered media item has bitrate, resolution, and video-codec metadata. Once analysis is complete, fulfillment details include the movie bitrate or, for TV, the average bitrate across the discovered episodes. Plex media-stream bitrate values are normalized from bits per second before Mbps display and REMUX classification.
+The fulfillment monitor checks pending TMDb-backed requests after startup and then every 15 seconds by default. A title remains pending after first appearing in Plex until every discovered media item has bitrate, resolution, and video-codec metadata. Once analysis is complete, fulfillment details include the movie bitrate or, for TV, the average bitrate across the discovered episodes. Plex bitrate values are normalized whether a database version stores `media_items.bitrate` in bits per second or kilobits per second; `media_streams.bitrate` is also converted from bits per second before Mbps display and REMUX classification.
 
 ## Discord notifications
 
-Use the administrator Config tab to set the Discord webhook for new-request and fulfillment notifications.
+Use the administrator Config tab to set up to two Discord webhooks for new-request and fulfillment notifications. The second webhook is optional; when configured, it receives the same polished request and fulfillment messages as the first webhook. Each destination has independent persisted delivery and retry state.
+
+Web assets and API responses are served with cache prevention, and release asset URLs include the application version. This prevents browsers and reverse proxies such as Cloudflare from retaining an older Config script that cannot save newly introduced settings.
 
 Use the same Config tab to set a separate admin reminder Discord webhook. The Config tab's **Request reminder interval (minutes)** setting controls both the first reminder delay and subsequent repeats; it defaults to 60 minutes and accepts 1 through 10080 minutes. When a reminder is due, Discord summaries cover every open, unmuted request with its requester, requested quality, and waiting time. Large summaries are automatically divided into numbered parts that stay within Discord's field and character limits. Waiting times use days after 24 hours. Administrators can mute or unmute an individual request from the Requests tab. Reminder messages disable Discord mention parsing.
 
@@ -306,7 +309,7 @@ New-request, fulfillment, and reminder notifications use structured Discord embe
 
 Requester mappings can be managed from the administrator Config page. Matching ignores case and surrounding whitespace. Mentions remain globally disabled in webhook payloads except for the single validated Discord user ID resolved from the administrator-managed mapping.
 
-Every request, fulfillment, and reminder notification is written atomically to `notification-outbox.json` before its first delivery attempt. Temporary failures retain the attempt count and error, then retry after 15 seconds with exponential backoff capped at one hour. Sent jobs are retained for 30 days to prevent the same event from being queued twice. Pending jobs resolve the currently configured primary or reminder webhook when delivered, so webhook URLs and tokens are not duplicated into the outbox. Delivery is at least once: an exceptional process or machine failure after Discord accepts a message but before the sent state reaches disk can cause that message to be retried.
+Every request, fulfillment, and reminder notification is written atomically to `notification-outbox.json` before its first delivery attempt. Temporary failures retain the attempt count and error, then retry after 15 seconds with exponential backoff capped at one hour. Sent jobs are retained for 30 days to prevent the same event from being queued twice. The two request/fulfillment destinations use separate jobs, so one Discord server can retry without duplicating delivery to the other. Pending jobs resolve the currently configured primary, secondary, or reminder webhook when delivered, so webhook URLs and tokens are not duplicated into the outbox. Delivery is at least once: an exceptional process or machine failure after Discord accepts a message but before the sent state reaches disk can cause that message to be retried.
 
 ## Download naming and seeding
 
@@ -339,6 +342,7 @@ The generated standalone executable provides a management window that:
 - Starts and stops the embedded standalone backend without using a system Python installation.
 - Displays backend logs.
 - Opens the website.
+- Saves the administrator PIN and revokes old admin sessions when it changes.
 - Saves the TMDb key; Discord webhooks are managed from the administrator Config page.
 - Configures the HTTP port used locally and through Tailscale, then restarts the server.
 - Displays torrent rename history.
@@ -463,7 +467,7 @@ Plex Requester/
 
 ## Security notes
 
-- Change the example/default admin PIN before exposing the app.
+- Set a unique administrator PIN of at least eight characters in the backend window before exposing the app.
 - Keep `config.json`, auth sessions, tracker passkeys, and webhook URLs private.
 - Prefer localhost, Tailscale, a VPN, or an HTTPS reverse proxy for remote access.
 - The built-in HTTP server does not provide TLS.

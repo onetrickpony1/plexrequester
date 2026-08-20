@@ -12,12 +12,13 @@ from .discord import (
     admin_reminder_webhook_url,
     clean_discord_user_mappings,
     discord_webhook_url,
+    secondary_discord_webhook_url,
     validate_discord_webhook_url,
 )
 from .storage import destination_paths
 
 
-DEFAULT_APP_VERSION = "v8.7"
+DEFAULT_APP_VERSION = "v9.1"
 DEFAULT_SERVER_PORT = 8003
 DEFAULT_ADMIN_REMINDER_INTERVAL_MINUTES = 60
 
@@ -66,6 +67,7 @@ def load_config(base_dir, user_data_path, environ=None):
     notifications["discordWebhookUrl"] = environ.get(
         "DISCORD_WEBHOOK_URL", notifications.get("discordWebhookUrl", "")
     )
+    notifications.setdefault("secondaryDiscordWebhookUrl", "")
     notifications["adminReminderWebhookUrl"] = environ.get(
         "DISCORD_ADMIN_REMINDER_WEBHOOK_URL", notifications.get("adminReminderWebhookUrl", "")
     )
@@ -129,6 +131,7 @@ def editable_config(config):
             for requester_name, discord_id in discord_mappings.items()
         ],
         "discordWebhookUrl": discord_webhook_url(config),
+        "secondaryDiscordWebhookUrl": secondary_discord_webhook_url(config),
         "adminReminderWebhookUrl": admin_reminder_webhook_url(config),
         "adminReminderIntervalMinutes": admin_reminder_interval_minutes(config),
         "destinations": [
@@ -156,6 +159,12 @@ def apply_editable_config(config, payload):
         validate_discord_webhook_url(payload.get("discordWebhookUrl"))
         if "discordWebhookUrl" in payload
         else current_webhook
+    )
+    current_secondary_webhook = notifications.get("secondaryDiscordWebhookUrl", "")
+    secondary_webhook = (
+        validate_discord_webhook_url(payload.get("secondaryDiscordWebhookUrl"))
+        if "secondaryDiscordWebhookUrl" in payload
+        else current_secondary_webhook
     )
     current_reminder_webhook = notifications.get("adminReminderWebhookUrl", "")
     reminder_webhook = validate_discord_webhook_url(
@@ -189,6 +198,7 @@ def apply_editable_config(config, payload):
     config.setdefault("plex", {})["databasePath"] = str(plex.get("databasePath", "")).strip()
     notifications["discordUserMappings"] = discord_mappings
     notifications["discordWebhookUrl"] = webhook
+    notifications["secondaryDiscordWebhookUrl"] = secondary_webhook
     notifications["adminReminderWebhookUrl"] = reminder_webhook
     notifications["adminReminderIntervalMinutes"] = reminder_interval
 

@@ -178,6 +178,7 @@ request_quality = requests_service.request_quality
 quality_satisfies_request = requests_service.quality_satisfies_request
 int_value = plex_service.int_value
 media_resolution_height = plex_service.media_resolution_height
+media_item_bitrate_kbps = plex_service.media_item_bitrate_kbps
 media_bitrate = plex_service.media_bitrate
 video_stream_for_media = plex_service.video_stream_for_media
 media_analysis_complete = plex_service.media_analysis_complete
@@ -233,6 +234,7 @@ request_item = requests_service.request_item
 add_request = requests_service.add_request
 complete_request_creation = requests_service.complete_request_creation
 discord_webhook_url = discord_service.discord_webhook_url
+secondary_discord_webhook_url = discord_service.secondary_discord_webhook_url
 admin_reminder_webhook_url = discord_service.admin_reminder_webhook_url
 admin_reminder_interval_minutes = discord_service.admin_reminder_interval_minutes
 admin_reminder_interval_seconds = discord_service.admin_reminder_interval_seconds
@@ -261,6 +263,7 @@ notification_retry_delay = discord_service.notification_retry_delay
 prune_notification_outbox = discord_service.prune_notification_outbox
 process_notification_outbox = discord_service.process_notification_outbox
 queue_discord_notification = discord_service.queue_discord_notification
+queue_request_notifications = discord_service.queue_request_notifications
 request_notification_identity = discord_service.request_notification_identity
 notify_request_created = discord_service.notify_request_created
 notify_request_fulfilled = discord_service.notify_request_fulfilled
@@ -305,6 +308,16 @@ def role_from_pin(config, value):
     return auth_service.role_from_pin(config, value)
 
 
+admin_pin_is_valid = auth_service.admin_pin_is_valid
+login_rate_limit_key = auth_service.login_rate_limit_key
+login_retry_after = auth_service.login_retry_after
+record_failed_login = auth_service.record_failed_login
+clear_failed_logins = auth_service.clear_failed_logins
+ADMIN_PIN_MIN_LENGTH = auth_service.ADMIN_PIN_MIN_LENGTH
+ADMIN_PIN_MAX_LENGTH = auth_service.ADMIN_PIN_MAX_LENGTH
+AUTH_MAX_FAILED_ATTEMPTS = auth_service.AUTH_MAX_FAILED_ATTEMPTS
+AUTH_FAILURE_WINDOW = auth_service.AUTH_FAILURE_WINDOW
+AUTH_LOCKOUT_SECONDS = auth_service.AUTH_LOCKOUT_SECONDS
 AUTH_COOKIE_NAME = auth_service.AUTH_COOKIE_NAME
 AUTH_SESSION_TTL = auth_service.AUTH_SESSION_TTL
 AUTH_REFRESH_AFTER = auth_service.AUTH_REFRESH_AFTER

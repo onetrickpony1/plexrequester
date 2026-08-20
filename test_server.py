@@ -1,5 +1,7 @@
 import base64
 import hashlib
+from http import HTTPStatus
+import io
 import json
 from pathlib import Path
 import sqlite3
@@ -16,7 +18,7 @@ class BackendModuleStructureTests(unittest.TestCase):
         self.assertIs(server.AppHandler, api.AppHandler)
         self.assertIs(server.QbittorrentClient, qbittorrent.QbittorrentClient)
         self.assertEqual(server.atomic_write_json.__module__, "server")
-        self.assertEqual(config.DEFAULT_APP_VERSION, "v8.7")
+        self.assertEqual(config.DEFAULT_APP_VERSION, "v9.1")
         self.assertEqual(server.USER_DATA_FILES, storage.USER_DATA_FILES)
 
     def test_plex_snapshot_works_through_focused_module(self):
@@ -71,6 +73,28 @@ class BackendModuleStructureTests(unittest.TestCase):
         source = (Path(__file__).parent / "static" / "app.js").read_text(encoding="utf-8")
         self.assertIn("${escapeHtml(title)}${escapeHtml(year)}", source)
         self.assertNotIn("${escapeHtml(title)}${year}</strong>", source)
+
+    def test_release_assets_are_versioned_to_bypass_stale_proxy_caches(self):
+        source = (Path(__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('/static/styles.css?v=9.1', source)
+        self.assertIn('/static/app.js?v=9.1', source)
+
+    def test_static_and_json_responses_disable_caching(self):
+        handler = object.__new__(server.AppHandler)
+        handler.send_response = mock.Mock()
+        handler.send_header = mock.Mock()
+        handler.end_headers = mock.Mock()
+        handler.wfile = io.BytesIO()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            asset = Path(temp_dir) / "app.js"
+            asset.write_text("console.log('test');", encoding="utf-8")
+            handler.serve_file(asset)
+        self.assertIn(mock.call("Cache-Control", "no-store"), handler.send_header.call_args_list)
+
+        handler.send_header.reset_mock()
+        handler.wfile = io.BytesIO()
+        handler.send_json({"ok": True})
+        self.assertIn(mock.call("Cache-Control", "no-store"), handler.send_header.call_args_list)
 
 
 class ServerPortConfigTests(unittest.TestCase):
@@ -170,7 +194,7 @@ class UserDataStorageTests(unittest.TestCase):
 
     def test_all_json_stores_use_atomic_writer(self):
         config_path = self.data_dir / "config.json"
-        config = {"_save_config_path": str(config_path), "app": {"version": "v8.7"}}
+        config = {"_save_config_path": str(config_path), "app": {"version": "v9.1"}}
         with mock.patch.object(server, "atomic_write_json") as atomic_write:
             server.save_requests([{"id": "one"}])
             server.save_fulfillment_state({"one": {"lastState": "open"}})
@@ -192,7 +216,7 @@ class UserDataStorageTests(unittest.TestCase):
 
 
 class AppVersionConfigTests(unittest.TestCase):
-    def payload(self, version="v8.7"):
+    def payload(self, version="v9.1"):
         return {
             "app": {"version": version},
             "qbittorrent": {"url": "http://localhost:8080"},
@@ -226,6 +250,77 @@ class AppVersionConfigTests(unittest.TestCase):
     def test_missing_admin_pin_does_not_authenticate_empty_input(self):
         self.assertEqual(server.role_from_pin({}, ""), "")
         self.assertFalse(server.pin_matches({}, ""))
+
+    def test_short_admin_pin_is_rejected(self):
+        self.assertFalse(server.admin_pin_is_valid("1234567"))
+        self.assertFalse(server.pin_matches({"adminPin": "1234567"}, "1234567"))
+        self.assertFalse(server.pin_matches({"adminPin": "change-this-pin"}, "change-this-pin"))
+        self.assertTrue(server.pin_matches({"adminPin": "12345678"}, "12345678"))
+
+
+class LoginRateLimitTests(unittest.TestCase):
+    def setUp(self):
+        self.keys = {
+            "address:203.0.113.8",
+            "access:admin@example.com",
+        }
+        for key in self.keys:
+            server.clear_failed_logins(key)
+
+    def tearDown(self):
+        for key in self.keys:
+            server.clear_failed_logins(key)
+
+    def test_access_identity_separates_users_behind_local_cloudflare_proxy(self):
+        self.assertEqual(
+            server.login_rate_limit_key("127.0.0.1", "Admin@Example.com"),
+            "access:admin@example.com",
+        )
+        self.assertEqual(
+            server.login_rate_limit_key("203.0.113.8", "forged@example.com"),
+            "address:203.0.113.8",
+        )
+
+    def test_fifth_failed_login_locks_identity_for_fifteen_minutes(self):
+        key = "address:203.0.113.8"
+        for attempt in range(server.AUTH_MAX_FAILED_ATTEMPTS - 1):
+            self.assertEqual(server.record_failed_login(key, now=100 + attempt), 0)
+        self.assertEqual(
+            server.record_failed_login(key, now=104),
+            server.AUTH_LOCKOUT_SECONDS,
+        )
+        self.assertEqual(
+            server.login_retry_after(key, now=105),
+            server.AUTH_LOCKOUT_SECONDS - 1,
+        )
+        self.assertEqual(server.login_retry_after(key, now=1004), 0)
+
+    def test_success_clears_previous_failures(self):
+        key = "access:admin@example.com"
+        server.record_failed_login(key, now=100)
+        server.clear_failed_logins(key)
+        for attempt in range(server.AUTH_MAX_FAILED_ATTEMPTS - 1):
+            self.assertEqual(server.record_failed_login(key, now=200 + attempt), 0)
+
+    def test_login_endpoint_returns_retry_after_on_fifth_failure(self):
+        key = "access:admin@example.com"
+        handler = object.__new__(server.AppHandler)
+        handler.client_address = ("127.0.0.1", 12345)
+        handler.headers = {"Cf-Access-Authenticated-User-Email": "admin@example.com"}
+        handler.server = mock.Mock(config={"adminPin": "correct-pin"})
+        handler.read_json_body = mock.Mock(return_value={"pin": "wrong-pin"})
+        handler.send_json = mock.Mock()
+
+        for _ in range(server.AUTH_MAX_FAILED_ATTEMPTS):
+            handler.auth_login()
+
+        payload, status = handler.send_json.call_args.args
+        self.assertEqual(status, HTTPStatus.TOO_MANY_REQUESTS)
+        self.assertIn("Too many", payload["error"])
+        self.assertEqual(
+            handler.send_json.call_args.kwargs["headers"],
+            [("Retry-After", str(server.AUTH_LOCKOUT_SECONDS))],
+        )
 
 
 class MultiDirectoryDestinationTests(unittest.TestCase):
@@ -314,7 +409,7 @@ class MultiDirectoryDestinationTests(unittest.TestCase):
     def test_admin_config_saves_multiple_paths_and_legacy_first_path(self):
         config = {"notifications": {}}
         payload = {
-            "app": {"version": "v8.7"},
+            "app": {"version": "v9.1"},
             "qbittorrent": {"url": "http://localhost:8080"},
             "plex": {"databasePath": ""},
             "discordUserMappings": [],
@@ -581,6 +676,7 @@ class DiscordRequesterMentionTests(unittest.TestCase):
             server.editable_config(config)["discordWebhookUrl"],
             "https://discord.invalid/webhook",
         )
+        self.assertEqual(server.editable_config(config)["secondaryDiscordWebhookUrl"], "")
 
     def test_admin_config_saves_request_webhook(self):
         config = self.config()
@@ -599,6 +695,116 @@ class DiscordRequesterMentionTests(unittest.TestCase):
             config["notifications"]["discordWebhookUrl"],
             "https://discord.invalid/webhook",
         )
+
+    def test_admin_config_saves_secondary_request_webhook(self):
+        config = self.config()
+        payload = self.editable_payload([])
+        payload["secondaryDiscordWebhookUrl"] = "https://discord.com/api/webhooks/789/second-token"
+        server.apply_editable_config(config, payload)
+        self.assertEqual(
+            config["notifications"]["secondaryDiscordWebhookUrl"],
+            "https://discord.com/api/webhooks/789/second-token",
+        )
+
+    def test_secondary_request_webhook_survives_disk_save(self):
+        config_path = Path(self.temp_dir.name) / "saved-config.json"
+        config = self.config()
+        config["_save_config_path"] = str(config_path)
+        payload = self.editable_payload([])
+        payload["secondaryDiscordWebhookUrl"] = "https://discord.com/api/webhooks/789/second-token"
+        server.apply_editable_config(config, payload)
+        server.save_config(config)
+
+        saved = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            saved["notifications"]["secondaryDiscordWebhookUrl"],
+            "https://discord.com/api/webhooks/789/second-token",
+        )
+        self.assertEqual(
+            server.editable_config(config)["secondaryDiscordWebhookUrl"],
+            "https://discord.com/api/webhooks/789/second-token",
+        )
+
+    def test_older_admin_payload_preserves_secondary_request_webhook(self):
+        config = self.config()
+        config["notifications"]["secondaryDiscordWebhookUrl"] = (
+            "https://discord.com/api/webhooks/789/second-token"
+        )
+        server.apply_editable_config(config, self.editable_payload([]))
+        self.assertEqual(
+            config["notifications"]["secondaryDiscordWebhookUrl"],
+            "https://discord.com/api/webhooks/789/second-token",
+        )
+
+    def test_invalid_secondary_request_webhook_is_rejected(self):
+        config = self.config()
+        payload = self.editable_payload([])
+        payload["secondaryDiscordWebhookUrl"] = "https://example.com/not-discord"
+        with self.assertRaisesRegex(ValueError, "valid HTTPS Discord webhook"):
+            server.apply_editable_config(config, payload)
+
+    def test_request_creation_is_sent_to_both_request_webhooks(self):
+        config = self.config()
+        config["notifications"].update({
+            "discordWebhookUrl": "https://discord.com/api/webhooks/123/first-token",
+            "secondaryDiscordWebhookUrl": "https://discord.com/api/webhooks/456/second-token",
+        })
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b""
+        with mock.patch.object(server.request, "urlopen", return_value=response) as urlopen:
+            self.assertTrue(server.notify_request_created(config, self.item()))
+
+        self.assertEqual(
+            [call.args[0].full_url for call in urlopen.call_args_list],
+            [
+                config["notifications"]["discordWebhookUrl"],
+                config["notifications"]["secondaryDiscordWebhookUrl"],
+            ],
+        )
+        payloads = [json.loads(call.args[0].data.decode("utf-8")) for call in urlopen.call_args_list]
+        self.assertEqual(payloads[0], payloads[1])
+        jobs = server.load_notification_outbox()
+        self.assertEqual({job["target"] for job in jobs}, {"primary", "primary-secondary"})
+
+    def test_fulfillment_is_sent_to_both_request_webhooks(self):
+        config = self.config()
+        config["notifications"].update({
+            "discordWebhookUrl": "https://discord.com/api/webhooks/123/first-token",
+            "secondaryDiscordWebhookUrl": "https://discord.com/api/webhooks/456/second-token",
+        })
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b""
+        with mock.patch.object(server.request, "urlopen", return_value=response) as urlopen:
+            self.assertTrue(server.notify_request_fulfilled(
+                config,
+                self.item(),
+                {"message": "Fulfilled: 1080p - 12.5 Mbps - H264."},
+            ))
+
+        self.assertEqual(urlopen.call_count, 2)
+        payloads = [json.loads(call.args[0].data.decode("utf-8")) for call in urlopen.call_args_list]
+        self.assertEqual(payloads[0], payloads[1])
+        self.assertEqual(payloads[0]["embeds"][0]["title"], "Now Available on Plex")
+
+    def test_second_webhook_failure_has_independent_retry_state(self):
+        config = self.config()
+        config["notifications"].update({
+            "discordWebhookUrl": "https://discord.com/api/webhooks/123/first-token",
+            "secondaryDiscordWebhookUrl": "https://discord.com/api/webhooks/456/second-token",
+        })
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b""
+        with mock.patch.object(
+            server.request,
+            "urlopen",
+            side_effect=[response, OSError("second server unavailable")],
+        ):
+            self.assertTrue(server.notify_request_created(config, self.item()))
+
+        jobs = {job["target"]: job for job in server.load_notification_outbox()}
+        self.assertEqual(jobs["primary"]["status"], "sent")
+        self.assertEqual(jobs["primary-secondary"]["status"], "failed")
+        self.assertIn("second server unavailable", jobs["primary-secondary"]["lastError"])
 
     def test_invalid_request_webhook_is_rejected(self):
         config = self.config()
@@ -1041,6 +1247,27 @@ class RequestRefreshPerformanceTests(unittest.TestCase):
         self.assertEqual(server.media_bitrate(media[0], streams), 13854)
         self.assertNotIn("REMUX", server.classify_media_quality(media, streams))
         self.assertEqual(server.media_quality_summary(media, streams), "1080p - 13.9 Mbps - AV1")
+
+    def test_media_item_bitrate_bits_are_normalized(self):
+        media = [{"id": 1, "bitrate": 2638700, "width": 1920, "height": 1080, "video_codec": "h264"}]
+        self.assertEqual(server.media_bitrate(media[0], []), 2639)
+        self.assertNotIn("REMUX", server.classify_media_quality(media, []))
+        self.assertEqual(server.media_quality_summary(media, []), "1080p - 2.6 Mbps - H264")
+
+    def test_media_item_high_bitrate_bits_remain_a_real_remux(self):
+        media = [{"id": 1, "bitrate": 87491800, "width": 3840, "height": 2160, "video_codec": "hevc"}]
+        self.assertEqual(server.media_bitrate(media[0], []), 87492)
+        self.assertIn("REMUX", server.classify_media_quality(media, []))
+        self.assertEqual(server.media_quality_summary(media, []), "REMUX - 87.5 Mbps - HEVC")
+
+    def test_low_media_item_bitrate_bits_use_stream_as_unit_reference(self):
+        media = [{"id": 1, "bitrate": 650000, "width": 1280, "height": 720}]
+        streams = [{"media_item_id": 1, "stream_type": 1, "bitrate": 600000, "codec": "h264"}]
+        self.assertEqual(server.media_bitrate(media[0], streams), 650)
+
+    def test_media_item_kbps_values_are_not_divided_twice(self):
+        self.assertEqual(server.media_item_bitrate_kbps(13854), 13854)
+        self.assertEqual(server.media_item_bitrate_kbps(45000), 45000)
 
     def test_genuine_high_bitrate_media_is_still_classified_as_remux(self):
         media = [{"id": 1, "bitrate": 45000, "width": 1920, "height": 1080}]

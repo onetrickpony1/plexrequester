@@ -1,6 +1,6 @@
 {
   "app": {
-    "version": "v8.7"
+    "version": "v9.1"
   },
   "server": {
     "port": 8003
@@ -19,6 +19,7 @@
   "notifications": {
     "discordUserMappings": {},
     "discordWebhookUrl": "https://discord.com/api/webhooks/123/request-token",
+    "secondaryDiscordWebhookUrl": "",
     "adminReminderWebhookUrl": "https://discord.com/api/webhooks/456/reminder-token",
     "adminReminderIntervalMinutes": 60
   },
