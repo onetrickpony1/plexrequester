@@ -50,6 +50,18 @@ if not exist "%ICON%" (
   exit /b 1
 )
 
+echo Running automated pre-build checks...
+python -m compileall -q "%BACKEND_SOURCE%" plex_requester test_server.py
+if errorlevel 1 (
+  echo ERROR: Python syntax checks failed. The existing release executable was not changed.
+  exit /b 1
+)
+python -m unittest -v
+if errorlevel 1 (
+  echo ERROR: Automated backend tests failed. The existing release executable was not changed.
+  exit /b 1
+)
+
 python -m PyInstaller --version >nul 2>&1
 if errorlevel 1 (
   echo ERROR: PyInstaller is not installed for this Python interpreter.

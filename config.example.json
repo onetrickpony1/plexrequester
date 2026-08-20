@@ -1,6 +1,6 @@
 {
   "app": {
-    "version": "v8.6"
+    "version": "v8.7"
   },
   "server": {
     "port": 8003

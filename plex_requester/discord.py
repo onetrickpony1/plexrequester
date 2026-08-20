@@ -1,9 +1,11 @@
 """Discord configuration validation and polished embed formatting."""
 
 from functools import wraps
+import hashlib
+import json
 import re
 import time
-from urllib import parse
+from urllib import parse, request
 
 
 DISCORD_EMBED_MAX_FIELDS = 25
@@ -649,4 +651,3 @@ notify_request_created = _live_backend_function(notify_request_created)
 notify_request_fulfilled = _live_backend_function(notify_request_fulfilled)
 notify_admin_unfulfilled_requests = _live_backend_function(notify_admin_unfulfilled_requests)
 send_due_admin_reminders = _live_backend_function(send_due_admin_reminders)
-

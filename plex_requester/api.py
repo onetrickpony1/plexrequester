@@ -3,6 +3,14 @@
 from functools import wraps
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.cookies import SimpleCookie
+from urllib import parse
+import json
+import mimetypes
+import socket
+import sqlite3
+import threading
+import time
 
 
 _backend_namespace = None
@@ -261,6 +269,8 @@ class AppHandler(BaseHTTPRequestHandler):
         parsed = parse.urlparse(self.path)
         if parsed.path != "/api/requests":
             return self.send_error(HTTPStatus.NOT_FOUND)
+        if not self.require_admin():
+            return
 
         params = parse.parse_qs(parsed.query)
         request_id = params.get("id", [""])[0]

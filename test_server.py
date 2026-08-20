@@ -2,12 +2,13 @@ import base64
 import hashlib
 import json
 from pathlib import Path
+import sqlite3
 import tempfile
 import unittest
 from unittest import mock
 
 import server
-from plex_requester import api, config, qbittorrent, storage
+from plex_requester import api, config, discord, plex, qbittorrent, requests as request_service, storage
 
 
 class BackendModuleStructureTests(unittest.TestCase):
@@ -15,8 +16,61 @@ class BackendModuleStructureTests(unittest.TestCase):
         self.assertIs(server.AppHandler, api.AppHandler)
         self.assertIs(server.QbittorrentClient, qbittorrent.QbittorrentClient)
         self.assertEqual(server.atomic_write_json.__module__, "server")
-        self.assertEqual(config.DEFAULT_APP_VERSION, "v8.6")
+        self.assertEqual(config.DEFAULT_APP_VERSION, "v8.7")
         self.assertEqual(server.USER_DATA_FILES, storage.USER_DATA_FILES)
+
+    def test_plex_snapshot_works_through_focused_module(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = Path(temp_dir) / "library.db"
+            connection = sqlite3.connect(database_path)
+            connection.execute("CREATE TABLE metadata_items (id INTEGER PRIMARY KEY, title TEXT)")
+            connection.execute("INSERT INTO metadata_items (title) VALUES ('Example')")
+            connection.commit()
+            connection.close()
+
+            snapshot_path = plex.snapshot_plex_database(database_path)
+            try:
+                snapshot = sqlite3.connect(snapshot_path)
+                self.assertEqual(snapshot.execute("SELECT title FROM metadata_items").fetchone()[0], "Example")
+                snapshot.close()
+            finally:
+                snapshot_path.unlink(missing_ok=True)
+
+    def test_fulfillment_interval_works_through_focused_module(self):
+        with mock.patch.dict(request_service.os.environ, {"FULFILLMENT_CHECK_SECONDS": "45"}):
+            self.assertEqual(request_service.fulfillment_check_interval(), 45)
+
+    def test_discord_helpers_work_through_focused_module(self):
+        self.assertEqual(
+            discord.notification_job_id("example"),
+            hashlib.sha256(b"example").hexdigest(),
+        )
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b""
+        with mock.patch.object(discord.request, "urlopen", return_value=response) as urlopen:
+            self.assertTrue(discord.send_discord_webhook(
+                "https://discord.com/api/webhooks/123/token",
+                content="Ready",
+            ))
+        payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
+        self.assertEqual(payload["content"], "Ready")
+        self.assertEqual(payload["allowed_mentions"], {"parse": []})
+
+    def test_request_delete_requires_admin(self):
+        handler = object.__new__(server.AppHandler)
+        handler.path = "/api/requests?id=one"
+        handler.require_admin = mock.Mock(return_value=False)
+        handler.send_json = mock.Mock()
+        with mock.patch.object(api, "delete_request") as delete_request:
+            handler.do_DELETE()
+        handler.require_admin.assert_called_once_with()
+        delete_request.assert_not_called()
+        handler.send_json.assert_not_called()
+
+    def test_request_year_is_html_escaped_before_rendering(self):
+        source = (Path(__file__).parent / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("${escapeHtml(title)}${escapeHtml(year)}", source)
+        self.assertNotIn("${escapeHtml(title)}${year}</strong>", source)
 
 
 class ServerPortConfigTests(unittest.TestCase):
@@ -116,7 +170,7 @@ class UserDataStorageTests(unittest.TestCase):
 
     def test_all_json_stores_use_atomic_writer(self):
         config_path = self.data_dir / "config.json"
-        config = {"_save_config_path": str(config_path), "app": {"version": "v8.6"}}
+        config = {"_save_config_path": str(config_path), "app": {"version": "v8.7"}}
         with mock.patch.object(server, "atomic_write_json") as atomic_write:
             server.save_requests([{"id": "one"}])
             server.save_fulfillment_state({"one": {"lastState": "open"}})
@@ -138,7 +192,7 @@ class UserDataStorageTests(unittest.TestCase):
 
 
 class AppVersionConfigTests(unittest.TestCase):
-    def payload(self, version="v8.6"):
+    def payload(self, version="v8.7"):
         return {
             "app": {"version": version},
             "qbittorrent": {"url": "http://localhost:8080"},
@@ -260,7 +314,7 @@ class MultiDirectoryDestinationTests(unittest.TestCase):
     def test_admin_config_saves_multiple_paths_and_legacy_first_path(self):
         config = {"notifications": {}}
         payload = {
-            "app": {"version": "v8.6"},
+            "app": {"version": "v8.7"},
             "qbittorrent": {"url": "http://localhost:8080"},
             "plex": {"databasePath": ""},
             "discordUserMappings": [],

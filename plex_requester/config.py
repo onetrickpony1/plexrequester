@@ -17,7 +17,7 @@ from .discord import (
 from .storage import destination_paths
 
 
-DEFAULT_APP_VERSION = "v8.6"
+DEFAULT_APP_VERSION = "v8.7"
 DEFAULT_SERVER_PORT = 8003
 DEFAULT_ADMIN_REMINDER_INTERVAL_MINUTES = 60
 

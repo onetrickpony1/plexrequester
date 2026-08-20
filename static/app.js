@@ -999,7 +999,7 @@ function requestCard(item) {
   card.innerHTML = `
     ${poster ? `<img class="request-poster" src="${escapeHtml(poster)}" alt="">` : `<div class="request-poster"></div>`}
     <div>
-      <strong>${escapeHtml(title)}${year}</strong>
+      <strong>${escapeHtml(title)}${escapeHtml(year)}</strong>
       <small>${escapeHtml(item.requester || "Unknown")} &middot; ${formatRequestTime(item.requestedAt)} &middot; ${escapeHtml(quality)}</small>
       ${fulfillment ? `<small class="request-status ${escapeHtml(fulfillment.state)}">${escapeHtml(fulfillment.message)}</small>` : ""}
       ${item.reminderMuted && isAdmin() ? `<small class="request-reminder-muted">Admin reminders muted</small>` : ""}
@@ -1009,7 +1009,7 @@ function requestCard(item) {
     <div class="request-actions">
       ${isAdmin() && (!fulfillment || fulfillment.state !== "fulfilled") ? `<button class="icon-button request-fulfill" type="button">Fulfilled</button>` : ""}
       ${isAdmin() ? `<button class="icon-button request-reminder-mute" type="button">${item.reminderMuted ? "Unmute reminder" : "Mute reminder"}</button>` : ""}
-      <button class="icon-button request-delete" type="button" aria-label="Delete request">Delete</button>
+      ${isAdmin() ? `<button class="icon-button request-delete" type="button" aria-label="Delete request">Delete</button>` : ""}
     </div>
   `;
   const deleteButton = card.querySelector(".request-delete");
@@ -1100,7 +1100,7 @@ async function loadAdminConfig() {
 }
 
 function renderConfig(config) {
-  configAppVersion.value = config.app?.version || "v8.6";
+  configAppVersion.value = config.app?.version || "v8.7";
   configQbitUrl.value = config.qbittorrent?.url || "";
   configPlexPath.value = config.plex?.databasePath || "";
   configDiscordWebhook.value = config.discordWebhookUrl || "";
